@@ -4,7 +4,6 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using DotNetPlugin.NativeBindings.SDK;
-using RGiesecke.DllExport;
 
 namespace DotNetPlugin
 {

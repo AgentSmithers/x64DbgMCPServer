@@ -35,9 +35,6 @@
   <ItemGroup>
     <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.18.2" />
     <PackageReference Include="System.Text.Json" Version="9.0.4" />
-    <PackageReference Include="UnmanagedExports.Repack" Version="1.0.4">
-      <IncludeAssets>build</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>

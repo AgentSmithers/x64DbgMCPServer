@@ -78,13 +78,24 @@ https://github.com/AgentSmithers/x64DbgMCPServer/blob/master/Sample2
 
 ## Prerequisites
 To build and run this project, you'll need:
-Visual Studio Build Tools (2019 v16.7 or later)
-.NET Framework 4.7.2 SDK
+- Visual Studio Build Tools (2019 v16.7 or later)
+- .NET Framework 4.7.2 SDK
+- 3F/DllExport
 
 ## Getting Started
 Clone or fork the project: git clone https://github.com/AgentSmithers/x64DbgMCPServer
 
+Download [DLlExport.bat](https://github.com/3F/DllExport/releases/download/1.8/DllExport.bat) and place it in the root folder of the project. Then, run the `DllExport.bat`.
+
+In the DllExport GUI,
+1. Check the `Installed` checkbox.
+2. Set the Namespace for DllExport to `System.Runtime.InteropServices`.
+3. Choose the target platform(`x64` or `x86`).
+4. Click Apply.
+
 Open the solution and build.
+
+📌 Tip: If you see `x64DbgMCPServer.dll` in the output folder, rename it to `x64DbgMCPServer.dp64` so that x64dbg can load the plugin.
 
 copy the files (x64DbgMCPServer\bin\x64\Debug) into the x64DBG plugin (x96\release\x64\plugins\x64DbgMCPServer) folder to run
 ![image](https://github.com/user-attachments/assets/8511452e-b65c-4bc8-83ff-885c384d0bbe)

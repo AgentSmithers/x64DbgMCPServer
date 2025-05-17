@@ -59,10 +59,4 @@
     </ItemGroup>
   </Target>
 
-  <ItemGroup>
-    <PackageReference Include="UnmanagedExports.Repack" Version="1.0.4">
-      <!-- Suppress actual IL rewriting because we want to do that at a later stage (see DotNetPlugin.Impl) -->
-      <ExcludeAssets>build</ExcludeAssets>
-    </PackageReference>
-  </ItemGroup>
 </Project>

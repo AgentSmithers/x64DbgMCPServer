@@ -10,36 +10,10 @@ namespace DotNetPlugin
     {
         protected override void SetupMenu(Menus menus)
         {
-            // Set main plugin menu icon (best-effort): prefer embedded mcp.ico; fallback to AboutIcon resource
+            // Set main plugin menu icon (PNG resource only)
             try
             {
-                var asm = typeof(Plugin).Assembly; // current assembly
-                Stream stream = null;
-                // Try fully-qualified name first
-                stream = asm.GetManifestResourceStream("DotNetPlugin.Resources.mcp.ico");
-                // Fallback: search any resource ending with mcp.ico
-                if (stream == null)
-                {
-                    foreach (var name in asm.GetManifestResourceNames())
-                    {
-                        if (name.EndsWith(".mcp.ico", StringComparison.OrdinalIgnoreCase))
-                        {
-                            stream = asm.GetManifestResourceStream(name);
-                            break;
-                        }
-                    }
-                }
-                if (stream != null)
-                {
-                    using (stream)
-                    using (var ico = new System.Drawing.Icon(stream))
-                        menus.Main.SetIcon(ico);
-                }
-                else
-                {
-                    // Fallback to managed resource (PNG)
-                    menus.Main.SetIcon(Resources.MainIcon);
-                }
+                menus.Main.SetIcon(Resources.MainIcon);
             }
             catch
             {

@@ -22,8 +22,6 @@ namespace DotNetPlugin
 {
     partial class Plugin
     {
-
-        //Commmand Toolnames should be ^[a-zA-Z0-9_-]{1,64}$
         //[Command("DotNetpluginTestCommand")]
         public static void cbNetTestCommand(string[] args)
         {
@@ -89,49 +87,22 @@ namespace DotNetPlugin
 
         static SimpleMcpServer GSimpleMcpServer;
 
-        [Command("StartMCPServer", X64DbgOnly = true ,DebugOnly = false)]
+        [Command("StartMCPServer", DebugOnly = false)]
         public static void cbStartMCPServer(string[] args)
         {
-            // --- Check if already initialized ---
-            if (GSimpleMcpServer != null)
-            {
-                Console.WriteLine("MCPServer instance already exists. Start command ignored.");
-                return; // Don't create a new one
-            }
-            Console.WriteLine("Starting MCPServer...");
-            try
-            {
-                // Create new instance and assign it to the static field
-                GSimpleMcpServer = new SimpleMcpServer(typeof(DotNetPlugin.Plugin));
-                GSimpleMcpServer.Start(); // Start the newly created server
-                Console.WriteLine("MCPServer Started.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to start MCPServer: {ex.Message}");
-                GSimpleMcpServer = null;
-            }
+            Console.WriteLine("Starting MCPServer");
+            GSimpleMcpServer = new SimpleMcpServer(typeof(DotNetPlugin.Plugin));
+            GSimpleMcpServer.Start();
+            Console.WriteLine("MCPServer Started");
         }
 
-        [Command("StopMCPServer", X64DbgOnly = true, DebugOnly = false)]
+        [Command("StopMCPServer", DebugOnly = false)]
         public static void cbStopMCPServer(string[] args)
         {
-            if (GSimpleMcpServer == null)
-            {
-                Console.WriteLine("MCPServer instance not found (already stopped or never started). Stop command ignored.");
-                return; // Nothing to stop
-            }
-            Console.WriteLine("Stopping MCPServer...");
-            try
-            {
-                GSimpleMcpServer.Stop();
-                GSimpleMcpServer = null;
-                Console.WriteLine("MCPServer Stopped.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error stopping MCPServer: {ex.Message}");
-            }
+            Console.WriteLine("Stopping MCPServer");
+            GSimpleMcpServer.Stop();
+            GSimpleMcpServer = null;
+            Console.WriteLine("MCPServer Stopped");
         }
 
         /// <summary>
@@ -147,11 +118,321 @@ namespace DotNetPlugin
         /// </summary>
         /// <param name="command">The debugger command string to execute.</param>
         /// <returns>True if the command executed successfully, false otherwise.</returns>
-        [Command("ExecuteDebuggerCommand", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Example: ExecuteDebuggerCommand command=init c:\\Path\\To\\Program.exe\r\nNote: See ListDebuggerCommands for list of applicable commands. Once a program is loaded new available functions can be viewed from the tools/list")]
+        [Command("ExecuteDebuggerCommand", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Example: ExecuteDebuggerCommand command=init c:\\Path\\To\\Program.exe\r\nNote: See ListDebuggerCommands for list of applicable commands.")]
         public static bool ExecuteDebuggerCommand(string command)
         {
             Console.WriteLine("Executing DebuggerCommand: " + command);
+            
+            // Special handling for potentially problematic commands
+            if (command.Trim().ToLower() == "bplist")
+            {
+                return ExecuteBpListSafely();
+            }
+            
             return DbgCmdExec(command);
+        }
+
+        private static bool ExecuteBpListSafely()
+        {
+            try
+            {
+                Console.WriteLine("Executing bplist with architecture-specific safety checks...");
+                
+                // Check if debugger is in a valid state
+                if (!Bridge.DbgIsDebugging())
+                {
+                    Console.WriteLine("Debugger is not actively debugging, skipping bplist");
+                    return false;
+                }
+                
+                // Try to get process ID first to ensure we have a valid process
+                var pid = Bridge.DbgValFromString("$pid");
+                if (pid == 0)
+                {
+                    Console.WriteLine("No valid process ID, skipping bplist");
+                    return false;
+                }
+                
+                // Detect architecture at runtime
+                bool isX64 = IsRunningInX64Dbg();
+                Console.WriteLine($"Detected architecture: {(isX64 ? "x64dbg" : "x32dbg")}, Process ID: {pid}");
+                
+                if (isX64)
+                {
+                    // x64dbg - use direct bplist (usually works fine)
+                    Console.WriteLine("Using direct bplist for x64dbg...");
+                    var result = DbgCmdExec("bplist");
+                    Console.WriteLine($"bplist result: {result}");
+                    return result;
+                }
+                else
+                {
+                    // x32dbg - use safer approach with log redirection
+                    Console.WriteLine("Using log redirection approach for x32dbg...");
+                    return ExecuteBpListForX32();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error executing bplist safely: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool IsRunningInX64Dbg()
+        {
+            try
+            {
+                // Method 1: Check if we can access x64-specific registers
+                // In x64dbg, RIP register should be available and non-zero
+                var rip = Bridge.DbgValFromString("$rip");
+                if (rip != 0)
+                {
+                    Console.WriteLine("Detected x64dbg via RIP register");
+                    return true;
+                }
+                
+                // Method 2: Check process architecture
+                var pid = Bridge.DbgValFromString("$pid");
+                if (pid != 0)
+                {
+                    try
+                    {
+                        var process = System.Diagnostics.Process.GetProcessById((int)pid);
+                        bool is64Bit = Environment.Is64BitProcess;
+                        Console.WriteLine($"Process architecture check: {(is64Bit ? "x64" : "x32")}");
+                        return is64Bit;
+                    }
+                    catch
+                    {
+                        // Fallback method
+                    }
+                }
+                
+                // Method 3: Check if x32-specific registers are available
+                var eip = Bridge.DbgValFromString("$eip");
+                if (eip != 0)
+                {
+                    Console.WriteLine("Detected x32dbg via EIP register");
+                    return false;
+                }
+                
+                // Default fallback - assume x32 if we can't determine
+                Console.WriteLine("Could not determine architecture, defaulting to x32dbg");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error detecting architecture: {ex.Message}, defaulting to x32dbg");
+                return false;
+            }
+        }
+
+        private static bool ExecuteBpListForX32()
+        {
+            try
+            {
+                // For x32dbg, use a safer approach with log redirection
+                // This avoids the direct crash that can happen with bplist
+                
+                string tempFile = null;
+                try
+                {
+                    tempFile = Path.Combine(Path.GetTempPath(), "x32dbg_bplist_" + Guid.NewGuid().ToString("N") + ".log");
+                    
+                    // Start log redirection
+                    DbgCmdExec($"LogRedirect \"{tempFile}\"");
+                    Thread.Sleep(100);
+                    
+                    // Try bplist with a delay (safer for x32dbg)
+                    Console.WriteLine("Executing bplist with safety delay for x32dbg...");
+                    DbgCmdExec("bplist");
+                    Thread.Sleep(300);
+                    
+                    // Stop redirection
+                    DbgCmdExec("LogRedirectStop");
+                    Thread.Sleep(100);
+                    
+                    // Read the log file
+                    if (File.Exists(tempFile))
+                    {
+                        var content = File.ReadAllText(tempFile);
+                        Console.WriteLine($"Breakpoint log content: {content}");
+                        return !string.IsNullOrEmpty(content);
+                    }
+                    
+                    return false;
+                }
+                finally
+                {
+                    // Clean up temp file
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(tempFile) && File.Exists(tempFile))
+                            File.Delete(tempFile);
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in ExecuteBpListForX32: {ex.Message}");
+                return false;
+            }
+        }
+
+        [Command("ExecuteDebuggerCommandWithVar", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Execute a command then return a debugger variable. Example: ExecuteDebuggerCommandWithVar command=init notepad.exe, resultVar=$pid, pollMs=100, pollTimeoutMs=5000")]
+        public static string ExecuteDebuggerCommandWithVar(string command, string resultVar = "$result", int pollMs = 0, int pollTimeoutMs = 2000)
+        {
+            try
+            {
+                Console.WriteLine("Executing DebuggerCommandWithVar: " + command + ", resultVar=" + resultVar);
+                DbgCmdExec(command);
+
+                if (pollMs > 0 && pollTimeoutMs > 0)
+                {
+                    var sw = Stopwatch.StartNew();
+                    while (sw.ElapsedMilliseconds < pollTimeoutMs)
+                    {
+                        var v = Bridge.DbgValFromString(resultVar);
+                        if (v != 0)
+                            return "0x" + v.ToHexString();
+                        Thread.Sleep(pollMs);
+                    }
+                }
+
+                {
+                    var v = Bridge.DbgValFromString(resultVar);
+                    return "0x" + v.ToHexString();
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"[ExecuteDebuggerCommandWithVar] Error: {ex.Message}";
+            }
+        }
+
+        [Command("ExecuteDebuggerCommandWithOutput", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Execute a command and return captured log output. Example: ExecuteDebuggerCommandWithOutput command=\"bplist\"")]
+        public static string ExecuteDebuggerCommandWithOutput(string command, int settleDelayMs = 200)
+        {
+            string tempFile = null;
+            try
+            {
+                Console.WriteLine("Executing DebuggerCommandWithOutput: " + command);
+
+                tempFile = Path.Combine(Path.GetTempPath(), "x64dbg_cmd_" + Guid.NewGuid().ToString("N") + ".log");
+
+                // Start redirection
+                DbgCmdExec($"LogRedirect \"{tempFile}\"");
+                Thread.Sleep(50);
+
+                // Execute the actual command
+                var ok = DbgCmdExec(command);
+                Thread.Sleep(settleDelayMs);
+
+                // Stop redirection
+                DbgCmdExec("LogRedirectStop");
+                Thread.Sleep(100);
+
+                // Read file with simple retries
+                string output = string.Empty;
+                for (int i = 0; i < 5; i++)
+                {
+                    if (File.Exists(tempFile))
+                    {
+                        try
+                        {
+                            var fi = new FileInfo(tempFile);
+                            if (fi.Length > 0)
+                            {
+                                output = File.ReadAllText(tempFile, Encoding.UTF8);
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                    Thread.Sleep(100);
+                }
+
+                // Filter common noise lines
+                if (!string.IsNullOrEmpty(output))
+                {
+                    var lines = output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+                        .Where(l => !l.Contains("Log will be redirected to")
+                                 && !l.Contains("Log redirection stopped")
+                                 && !l.Equals("Log cleared", StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+                    output = string.Join(Environment.NewLine, lines).Trim();
+                }
+
+                if (!string.IsNullOrEmpty(output))
+                    return output;
+
+                return ok ? "Command executed successfully (no output captured)" : "Command execution failed (no output captured)";
+            }
+            catch (Exception ex)
+            {
+                return $"[ExecuteDebuggerCommandWithOutput] Error: {ex.Message}";
+            }
+            finally
+            {
+                try { if (!string.IsNullOrEmpty(tempFile) && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+            }
+        }
+
+        [Command("GetBreakpointInfo", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Get breakpoint information using alternative methods. Example: GetBreakpointInfo")]
+        public static string GetBreakpointInfo()
+        {
+            try
+            {
+                Console.WriteLine("Getting breakpoint information using alternative methods...");
+                
+                if (!Bridge.DbgIsDebugging())
+                {
+                    return "Debugger is not actively debugging";
+                }
+                
+                var output = new StringBuilder();
+                output.AppendLine("Breakpoint Information:");
+                output.AppendLine("======================");
+                
+                // Try to get breakpoint count using debugger variables
+                try
+                {
+                    var bpCount = Bridge.DbgValFromString("$bpcount");
+                    output.AppendLine($"Breakpoint count: {bpCount}");
+                }
+                catch (Exception ex)
+                {
+                    output.AppendLine($"Could not get breakpoint count: {ex.Message}");
+                }
+                
+                // Try to get breakpoint list using a different approach
+                try
+                {
+                    // Use ExecuteDebuggerCommandWithOutput which has better error handling
+                    var result = ExecuteDebuggerCommandWithOutput("bplist", 500);
+                    if (!string.IsNullOrEmpty(result))
+                    {
+                        output.AppendLine("Breakpoint list:");
+                        output.AppendLine(result);
+                    }
+                    else
+                    {
+                        output.AppendLine("No breakpoints found or command failed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    output.AppendLine($"Error getting breakpoint list: {ex.Message}");
+                }
+                
+                return output.ToString();
+            }
+            catch (Exception ex)
+            {
+                return $"Error getting breakpoint info: {ex.Message}";
+            }
         }
 
         [Command("ListDebuggerCommands", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Example: ListDebuggerCommands")]
@@ -1451,9 +1732,9 @@ namespace DotNetPlugin
 
 
         [Command("DumpModuleToFile", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: DumpModuleToFile pfilepath=C:\\Output.txt")]
-        public static void DumpModuleToFile(string pfilepath)
+        public static void DumpModuleToFile(string[] pfilepath)
         {
-            string filePath = pfilepath;//@"C:\dump.txt"; // Hardcoded file path as requested
+            string filePath = pfilepath[0];//@"C:\dump.txt"; // Hardcoded file path as requested
             Console.WriteLine($"Attempting to dump module info to: {filePath}");
 
             try

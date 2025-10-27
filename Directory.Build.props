@@ -1,6 +1,6 @@
 ﻿<Project>
   <PropertyGroup>
-    <PluginName>AgentSmithersx64dbgMCPServer</PluginName>
+    <PluginName>MCP - Agent Smithers</PluginName>
     <PluginAssemblyName>x64DbgMCPServer</PluginAssemblyName>
 
     <PluginRootNamespace>DotNetPlugin</PluginRootNamespace>

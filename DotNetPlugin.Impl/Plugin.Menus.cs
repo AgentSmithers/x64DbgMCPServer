@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Windows.Forms;
 using DotNetPlugin.NativeBindings.SDK;
 using DotNetPlugin.Properties;
@@ -9,9 +10,19 @@ namespace DotNetPlugin
     {
         protected override void SetupMenu(Menus menus)
         {
+            // Set main plugin menu icon (PNG resource only)
+            try
+            {
+                menus.Main.SetIcon(Resources.MainIcon);
+            }
+            catch
+            {
+                // Last resort: keep default without icon
+            }
+
             menus.Main
-                .AddAndConfigureItem("&StartMCPServer", StartMCPServer).SetIcon(Resources.AboutIcon).Parent
-                .AddAndConfigureItem("&StopMCPServer", StopMCPServer).SetIcon(Resources.AboutIcon).Parent
+                .AddAndConfigureItem("&Start MCP Server", StartMCPServer).SetIcon(Resources.AboutIcon).Parent
+                .AddAndConfigureItem("&Stop MCP Server", StopMCPServer).SetIcon(Resources.AboutIcon).Parent
                 .AddAndConfigureItem("&About...", OnAboutMenuItem).SetIcon(Resources.AboutIcon);
             //.AddAndConfigureItem("&CustomCommand", ExecuteCustomCommand).SetIcon(Resources.AboutIcon).Parent
             //.AddAndConfigureItem("&DotNetDumpProcess", OnDumpMenuItem).SetHotKey("CTRL+F12").Parent

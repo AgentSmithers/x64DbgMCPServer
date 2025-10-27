@@ -4,6 +4,8 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using DotNetPlugin.NativeBindings.SDK;
+using RGiesecke.DllExport;
+using System.Drawing;
 
 namespace DotNetPlugin
 {
@@ -206,7 +208,7 @@ namespace DotNetPlugin
         }
 #endif
 
-        [System.Runtime.InteropServices.DllExport("pluginit", CallingConvention.Cdecl)]
+        [RGiesecke.DllExport.DllExport("pluginit", CallingConvention.Cdecl)]
         public static bool pluginit(ref Plugins.PLUG_INITSTRUCT initStruct)
         {
             if (!TryLoadPlugin(isInitial: true))
@@ -236,7 +238,7 @@ namespace DotNetPlugin
             return true;
         }
 
-        [System.Runtime.InteropServices.DllExport("plugsetup", CallingConvention.Cdecl)]
+        [RGiesecke.DllExport.DllExport("plugsetup", CallingConvention.Cdecl)]
         private static void plugsetup(ref Plugins.PLUG_SETUPSTRUCT setupStruct)
         {
             s_setupStruct = setupStruct;
@@ -244,7 +246,7 @@ namespace DotNetPlugin
             Session.Setup(ref setupStruct);
         }
 
-        [System.Runtime.InteropServices.DllExport("plugstop", CallingConvention.Cdecl)]
+        [RGiesecke.DllExport.DllExport("plugstop", CallingConvention.Cdecl)]
         private static bool plugstop()
         {
             var success = Session.Stop();
@@ -279,10 +281,17 @@ namespace DotNetPlugin
         }
 #endif
 
-        [System.Runtime.InteropServices.DllExport("CBMENUENTRY", CallingConvention.Cdecl)]
+        [RGiesecke.DllExport.DllExport("CBMENUENTRY", CallingConvention.Cdecl)]
         public static void CBMENUENTRY(Plugins.CBTYPE cbType, ref Plugins.PLUG_CB_MENUENTRY info)
         {
             Session.OnMenuEntry(ref info);
+        }
+
+        [RGiesecke.DllExport.DllExport("plugingeticon", CallingConvention.Cdecl)]
+        public static IntPtr plugingeticon()
+        {
+            // Icon handled via managed menu icon in Impl; no stub icon.
+            return IntPtr.Zero;
         }
     }
 }

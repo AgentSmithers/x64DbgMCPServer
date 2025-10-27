@@ -1,0 +1,5 @@
+DotNetPlugin.Impl/DotNetPlugin.Impl.csproj merge=ours
+DotNetPlugin.Stub/PluginMain.cs merge=ours
+DotNetPlugin.Stub/Attributes.DllExport.cs merge=ours
+.github/workflows/build-x86.yml merge=ours
+.github/workflows/build-x64.yml merge=ours

@@ -1,0 +1,49 @@
+name: Build x86 Plugin
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - 'Directory.Build.props'
+      - '.github/workflows/build-x86.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}\\packages
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: msbuild x64DbgMCPServer.sln /t:Restore /p:Platform=x86 /p:Configuration=Debug /p:RestorePackagesPath="${{ env.NUGET_PACKAGES }}" /p:BaseIntermediateOutputPath=.cache\\obj\\
+
+      - name: Build x86 Debug
+        run: msbuild x64DbgMCPServer.sln /t:Rebuild /p:Platform=x86 /p:Configuration=Debug /p:RestorePackagesPath="${{ env.NUGET_PACKAGES }}" /p:BaseIntermediateOutputPath=.cache\\obj\\ /p:BaseOutputPath=.cache\\bin\\
+
+      - name: Upload artifact (dp32)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentSmithers_x64DbgMCP_x32Plugin
+          path: |
+            bin\\x86\\Debug\\**\\*.dp32
+            bin\\x86\\Debug\\**\\*.dll
+            bin\\x86\\Debug\\**\\*.pdb
+          if-no-files-found: error
+
+      - name: Cleanup caches
+        if: always()
+        run: |
+          Remove-Item -Recurse -Force .cache -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force packages -ErrorAction SilentlyContinue

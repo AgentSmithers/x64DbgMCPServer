@@ -389,3 +389,8 @@ FodyWeavers.xsd
 
 !DotNetPlugin.Impl/NativeBindings/Win32/
 !DotNetPlugin.Stub/NativeBindings/Win32/
+
+# CI and local build caches
+.cache/
+**/.cache/
+packages/

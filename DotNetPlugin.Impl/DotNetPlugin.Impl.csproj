@@ -35,6 +35,9 @@
   <ItemGroup>
     <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.18.2" />
     <PackageReference Include="System.Text.Json" Version="9.0.4" />
+    <PackageReference Include="UnmanagedExports.Repack" Version="1.0.4">
+      <IncludeAssets>build</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
@@ -87,7 +90,13 @@
   </Target>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;C:\Users\User\Desktop\x96\release\x64\plugins\x64DbgMCPServer&quot;&#xD;&#xA;rem start cmd /c C:\Users\User\Desktop\x96\release\x96dbg.exe" />
+    <!-- You can update the path to x96dbg here -->
+    <PropertyGroup>
+      <X96DbgRootPath>C:\Users\User\Desktop\x96\release</X96DbgRootPath>
+    </PropertyGroup>
+    
+    <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;$(X96DbgRootPath)\x64\plugins\x64DbgMCPServer&quot;" />
+    <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;$(X96DbgRootPath)\x32\plugins\x64DbgMCPServer&quot;" />
   </Target>
 
 </Project>

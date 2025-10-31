@@ -13,7 +13,6 @@
     <BaseOutputPath>bin</BaseOutputPath>
     <GenerateResourceUsePreserializedResources>true</GenerateResourceUsePreserializedResources>
   </PropertyGroup>
-
   <PropertyGroup Condition="'$(Platform)'=='x86'">
     <DefineConstants>X86;$(DefineConstants)</DefineConstants>
     <PluginExt>.dp32</PluginExt>
@@ -28,11 +27,9 @@
   <ItemGroup>
     <EmbeddedResource Include="Resources\abouticon.png" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\DotNetPlugin.Stub\DotNetPlugin.Stub.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.18.2" />
     <PackageReference Include="System.Resources.Extensions" Version="8.0.0" />
@@ -41,13 +38,11 @@
       <IncludeAssets>build</IncludeAssets>
     </PackageReference>
   </ItemGroup>
-
   <ItemGroup>
     <Reference Include="Microsoft.VisualBasic" />
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
-
   <ItemGroup>
     <Compile Update="Properties\Resources.Designer.cs">
       <DesignTime>True</DesignTime>
@@ -55,14 +50,12 @@
       <DependentUpon>Resources.resx</DependentUpon>
     </Compile>
   </ItemGroup>
-
   <ItemGroup>
     <EmbeddedResource Update="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
     </EmbeddedResource>
   </ItemGroup>
-
   <!--
     When plugin unloading is allowed (Debug builds):
     1. Add actual DLL exports by rewriting the Stub assembly
@@ -73,7 +66,6 @@
     2. Add actual DLL exports by rewriting the merged assembly
     3. Rename merged assembly to have the proper plugin extension
   -->
-
   <Target Name="SetPostProcessingProperties" BeforeTargets="ILRepacker">
     <PropertyGroup>
       <StubAssemblyName>$([System.Text.RegularExpressions.Regex]::Replace($(TargetName), '\.Impl$', ''))</StubAssemblyName>
@@ -81,24 +73,44 @@
       <StubAssemblyPath>$(TargetDir)$(StubAssemblyName)$(StubAssemblyExt)</StubAssemblyPath>
       <DllExportInputFileName>$(StubAssemblyPath)</DllExportInputFileName>
     </PropertyGroup>
-
     <ItemGroup>
       <ILRepackLibraryPath Include="$(OutputPath)" />
     </ItemGroup>
   </Target>
-
   <Target Name="SetPluginExt" AfterTargets="RGieseckeDllExport">
     <Move SourceFiles="$(StubAssemblyPath)" DestinationFiles="$(TargetDir)$(StubAssemblyName)$(PluginExt)" />
   </Target>
-
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
     <!-- You can update the path to x96dbg here -->
+	<!-- set X96DBG_ROOT=C:\Users\User\Desktop\x96 -->
     <PropertyGroup>
-      <X96DbgRootPath>C:\Users\User\Desktop\x96\release</X96DbgRootPath>
+	    <X96DbgRootPath Condition="'$(X96DBG_ROOT)' == ''">$(USERPROFILE)\Desktop\x96</X96DbgRootPath>
+	    <X96DbgRootPath Condition="'$(X96DBG_ROOT)' != ''">$(X96DBG_ROOT)</X96DbgRootPath>
     </PropertyGroup>
-    
-    <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;$(X96DbgRootPath)\x64\plugins\x64DbgMCPServer&quot;" />
-    <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;$(X96DbgRootPath)\x32\plugins\x64DbgMCPServer&quot;" />
-  </Target>
+	  <!--
+	        <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;$(X96DbgRootPath)\x64\plugins\x64DbgMCPServer&quot;" />
+            <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.*&quot; &quot;$(X96DbgRootPath)\x32\plugins\x64DbgMCPServer&quot;" />
+	  -->
+	  <!-- Define the destination folder -->
+	  <PropertyGroup>
+		  <PluginDestDir Condition="'$(Platform)'=='x64'">$(X96DbgRootPath)\x64\plugins\x64DbgMCPServer</PluginDestDir>
+		  <PluginDestDir Condition="'$(Platform)'=='x86'">$(X96DbgRootPath)\x32\plugins\x64DbgMCPServer</PluginDestDir>
+	  </PropertyGroup>
 
+	  <!-- 1. Copy the main plugin file (.dp64 or .dp32) -->
+	  <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')"
+			Command="xcopy /Y /I &quot;$(TargetDir)*.dp64&quot; &quot;$(PluginDestDir)\&quot;" />
+
+	  <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')"
+			Command="xcopy /Y /I &quot;$(TargetDir)*.dp32&quot; &quot;$(PluginDestDir)\&quot;" />
+
+	  <!-- 2. Copy the RemotingHelper DLL (required dependency) -->
+	  <Exec Condition="Exists('$(X96DbgRootPath)')"
+			Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.RemotingHelper.dll&quot; &quot;$(PluginDestDir)\&quot;" />
+
+	  <!-- 3. Optional: Copy the PDB for debugging in x96dbg if needed -->
+	  <Exec Condition="Exists('$(X96DbgRootPath)')"
+			Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.pdb&quot; &quot;$(PluginDestDir)\&quot;" />
+	  
+  </Target>
 </Project>

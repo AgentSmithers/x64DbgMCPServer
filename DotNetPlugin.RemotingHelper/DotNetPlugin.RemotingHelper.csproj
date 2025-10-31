@@ -9,7 +9,6 @@
     <DebugSymbols>true</DebugSymbols>
     <AssemblyTitle>$(PluginName)</AssemblyTitle>
   </PropertyGroup>
-
   <PropertyGroup Condition="'$(Platform)'=='x86'">
     <DefineConstants>X86;$(DefineConstants)</DefineConstants>
   </PropertyGroup>

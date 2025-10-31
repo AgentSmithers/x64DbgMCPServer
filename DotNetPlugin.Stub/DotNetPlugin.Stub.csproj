@@ -10,7 +10,6 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyTitle>$(PluginName)</AssemblyTitle>
   </PropertyGroup>
-
   <PropertyGroup Condition="'$(Platform)'=='x86'">
     <DefineConstants>X86;$(DefineConstants)</DefineConstants>
     <CustomTargetExt>.dp32</CustomTargetExt>
@@ -19,51 +18,41 @@
     <DefineConstants>AMD64;$(DefineConstants)</DefineConstants>
     <CustomTargetExt>.dp64</CustomTargetExt>
   </PropertyGroup>
-
   <Choose>
     <When Condition="'$(AllowUnloading)'=='true'">
       <PropertyGroup>
         <DefineConstants>ALLOW_UNLOADING;$(DefineConstants)</DefineConstants>
       </PropertyGroup>
-
       <ItemGroup>
         <ProjectReference Include="..\DotNetPlugin.RemotingHelper\DotNetPlugin.RemotingHelper.csproj" />
       </ItemGroup>
     </When>
   </Choose>
-
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
   </ItemGroup>
-
   <ItemGroup>
     <!-- Removed ICO; menu icon is provided by Impl via Resources.MainIcon (PNG) -->
   </ItemGroup>
-
   <!-- Writes the target path of the Impl assembly to file and embeds that file as a resource in the current assembly. -->
-
   <Target Name="GenerateBuildMetadata" BeforeTargets="BeforeBuild" Condition="'$(AllowUnloading)'=='true'">
     <PropertyGroup>
       <BuildMetadataFileName>build.meta</BuildMetadataFileName>
       <BuildMetadataFilePath>$(IntermediateOutputPath)$(BuildMetadataFileName)</BuildMetadataFilePath>
       <ImplTargetPath>$([System.IO.Path]::GetFullPath($(PluginOutputPath)))$(TargetName).Impl$(TargetExt)</ImplTargetPath>
     </PropertyGroup>
-
     <ReadLinesFromFile File="$(BuildMetadataFilePath)" ContinueOnError="true">
       <Output TaskParameter="Lines" PropertyName="BuildMetadataContent" />
     </ReadLinesFromFile>
-
     <WriteLinesToFile File="$(BuildMetadataFilePath)" Lines="$(ImplTargetPath)" Overwrite="true" Condition="'$(BuildMetadataContent)' != '$(ImplTargetPath)'">
     </WriteLinesToFile>
-
     <ItemGroup>
       <EmbeddedResource Include="$(BuildMetadataFilePath)">
         <LogicalName>$(BuildMetadataFileName)</LogicalName>
       </EmbeddedResource>
     </ItemGroup>
   </Target>
-
   <ItemGroup>
     <PackageReference Include="UnmanagedExports.Repack" Version="1.0.4">
       <!-- Suppress actual IL rewriting because we want to do that at a later stage (see DotNetPlugin.Impl) -->

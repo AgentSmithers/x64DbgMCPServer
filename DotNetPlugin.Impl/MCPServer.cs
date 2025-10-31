@@ -36,13 +36,13 @@ namespace DotNetPlugin
             //DisableServerHeader(); //Prob not needed
             _targetType = commandSourceType;
             _config = config ?? McpServerConfig.Load();
-            
+            string IPAddress = _config.IpAddress;
+            string port = _config.Port.ToString();
             string baseUrl = _config.GetBaseUrl();
             Console.WriteLine($"MCP server listening on {baseUrl}");
-            Console.WriteLine($"Connect via: {_config.GetDisplayUrl()}");
-            
-            _listener.Prefixes.Add($"{baseUrl}sse/"); //Request come in without a trailing '/' but are still handled
-            _listener.Prefixes.Add($"{baseUrl}message/");
+            Console.WriteLine("MCP server lising on " + IPAddress + ":" + port);
+            _listener.Prefixes.Add("http://" + IPAddress + ":" + port + "/sse/"); //Request come in without a trailing '/' but are still handled
+            _listener.Prefixes.Add("http://" + IPAddress + ":" + port + "/message/");
 
             //_listener.Prefixes.Add("http://127.0.0.1:50300/sse/"); //Request come in without a trailing '/' but are still handled
             //_listener.Prefixes.Add("http://127.0.0.1:50300/message/");

@@ -100,6 +100,8 @@ Clone or fork the project: git clone https://github.com/AgentSmithers/x64DbgMCPS
 
 Download [DLlExport.bat](https://github.com/3F/DllExport/releases/download/1.8/DllExport.bat) and place it in the root folder of the project (Where the solutions[.sln] file is located). Then, run the `DllExport.bat`.
 
+# For X86 / 32bit support, you must have .NET Framework 2.0 and .NET Framework 3.5 installed through "add/remove windows components" in Add or remove programed (appwiz.cpl).
+
 In the DllExport GUI,
 1. Check the `Installed` checkbox.
 2. Set the Namespace for DllExport to `System.Runtime.InteropServices`.

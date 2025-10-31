@@ -106,7 +106,13 @@ In the DllExport GUI,
 3. Choose the target platform(`x64` or `x86`).
 4. Click Apply.
 
-Open the solution and build.
+<img width="518" height="462" alt="image" src="https://github.com/user-attachments/assets/5148316e-37fe-48d4-baec-73fb2ef1d3ed" />
+
+Open the .sln solution file and build.
+
+If you get this error, clean and rebuild the DotNetPlugin.Stub
+<img width="998" height="155" alt="image" src="https://github.com/user-attachments/assets/a4bd8b06-3b35-4e3d-bdea-d7f8627178b3" />
+
 
 📌 Tip: If you see `x64DbgMCPServer.dll` in the output folder, rename it to `x64DbgMCPServer.dp64` so that x64dbg can load the plugin.
 

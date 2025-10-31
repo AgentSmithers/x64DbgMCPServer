@@ -98,7 +98,7 @@ To build and run this project, you'll need:
 ## Getting Started
 Clone or fork the project: git clone https://github.com/AgentSmithers/x64DbgMCPServer
 
-Download [DLlExport.bat](https://github.com/3F/DllExport/releases/download/1.8/DllExport.bat) and place it in the root folder of the project. Then, run the `DllExport.bat`.
+Download [DLlExport.bat](https://github.com/3F/DllExport/releases/download/1.8/DllExport.bat) and place it in the root folder of the project (Where the solutions[.sln] file is located). Then, run the `DllExport.bat`.
 
 In the DllExport GUI,
 1. Check the `Installed` checkbox.

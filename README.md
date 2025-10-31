@@ -118,8 +118,12 @@ If you get this error, clean and rebuild the DotNetPlugin.Stub
 
 📌 Tip: If you see `x64DbgMCPServer.dll` in the output folder, rename it to `x64DbgMCPServer.dp64` so that x64dbg can load the plugin.
 
-copy the files (x64DbgMCPServer\bin\x64\Debug) into the x64DBG plugin (x96\release\x64\plugins\x64DbgMCPServer) folder to run
+copy the files (x64DbgMCPServer\bin\x64\Debug) into the x64DBG plugin (x96\release\x64\plugins\x64DbgMCPServer) folder to run.
+Note: If the plugin folder does not exist, create it and create a x64DbgMCPServer subfolder and copy the files within.
 ![image](https://github.com/user-attachments/assets/8511452e-b65c-4bc8-83ff-885c384d0bbe)
+
+<img width="880" height="463" alt="image" src="https://github.com/user-attachments/assets/05994544-1b00-4b2d-9998-bf61c72b1425" />
+
 
 Sample Debug log when loaded
 

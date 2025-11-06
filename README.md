@@ -204,6 +204,9 @@ The MCP server runs a simple HTTP listener and routes incoming commands to C# me
 ExecuteDebuggerCommand always returns true as it pertains to the comment successfully being execute and not the results of the actual command.(Fix was implemented,needs checking.)\
 Currently the already compiled version is set to listen on all IP's on port 50300 thus requiring Administrative privileges. Future releases will look to detect this and will listen only on 127.0.0.1 so it may be used without administrative privileges.(See the `Troubleshooting` section)
 
+If upon launch x64/x32 dbg crashes, ensure the DLL's are not being blocked by windows.
+This causes .NET Framework to refuse loading the assemblies for security reasons.
+
 ## Special thanks
 ⚡ With the help of DotNetPluginCS by Adams85. That and roughly ~20 hours of focused coding, MCP Protocol review resulted in a decent proof-of-concept self-contained HTTP MCP server plugin for x64dbg.
 

@@ -165,6 +165,7 @@ netsh http add urlacl url=http://+:50300/message/ user=Everyone
 
 After running these commands, you can start x64dbg normally and the MCP server will work.
 
+**Ensure that you run powershells "Unblock-File *" command to remove any sort of block on the downloaded files.**
 
 ### Sample Commands using the X64Dbg MCP Client
 I've validated several commands already and they are working wonders. I'm especially excited to be using this system to explore how AI-assisted reverse engineering could streamline security workflows.

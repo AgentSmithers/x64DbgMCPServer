@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 using DotNetPlugin.NativeBindings.SDK;
 using DotNetPlugin.Properties;
@@ -23,13 +24,10 @@ namespace DotNetPlugin
             menus.Main
                 .AddAndConfigureItem("&Start MCP Server", StartMCPServer).SetIcon(Resources.AboutIcon).Parent
                 .AddAndConfigureItem("&Stop MCP Server", StopMCPServer).SetIcon(Resources.AboutIcon).Parent
+                .AddSeparator()
+                .AddAndConfigureItem("&Configure MCP Server...", ConfigureMCPServer).SetIcon(Resources.AboutIcon).Parent
+                .AddSeparator()
                 .AddAndConfigureItem("&About...", OnAboutMenuItem).SetIcon(Resources.AboutIcon);
-            //.AddAndConfigureItem("&CustomCommand", ExecuteCustomCommand).SetIcon(Resources.AboutIcon).Parent
-            //.AddAndConfigureItem("&DotNetDumpProcess", OnDumpMenuItem).SetHotKey("CTRL+F12").Parent
-            //.AddAndConfigureSubMenu("sub menu")
-            //    .AddItem("sub menu entry1", menuItem => Console.WriteLine($"hEntry={menuItem.Id}"))
-            //    .AddSeparator()
-            //    .AddItem("sub menu entry2", menuItem => Console.WriteLine($"hEntry={menuItem.Id}"));
         }
 
         public void OnAboutMenuItem(MenuItem menuItem)
@@ -63,6 +61,36 @@ namespace DotNetPlugin
         public static void StopMCPServer(MenuItem menuItem)
         {
             Bridge.DbgCmdExec("StopMCPServer");
+        }
+
+        public static void ConfigureMCPServer(MenuItem menuItem)
+        {
+            // Load current configuration
+            var config = Plugin.GetMcpServerConfig();
+
+            // Show dialog on STA thread (required for Windows Forms)
+            var t = new Thread(() =>
+            {
+                using (var dialog = new McpConfigDialog(config))
+                {
+                    if (dialog.ShowDialog() == DialogResult.OK)
+                    {
+                        // Update and save configuration
+                        config.IpAddress = dialog.IpAddress;
+                        config.Port = dialog.Port;
+                        Plugin.SetMcpServerConfig(config);
+
+                        MessageBox.Show(
+                            $"Configuration saved.\n\nNew URL: {config.GetDisplayUrl()}\n\nPlease restart the MCP server for changes to take effect.",
+                            "MCP Server Configuration",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
+                }
+            });
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();
         }
     }
 }

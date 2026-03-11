@@ -19,6 +19,7 @@ namespace DotNetPlugin
         private readonly HttpListener _listener = new HttpListener();
         private readonly Dictionary<string, MethodInfo> _commands = new Dictionary<string, MethodInfo>(StringComparer.OrdinalIgnoreCase);
         private readonly Type _targetType;
+        private readonly McpServerConfig _config;
 
         public bool IsActivelyDebugging
         {
@@ -26,14 +27,22 @@ namespace DotNetPlugin
             set { /* accept assignments from event callbacks; actual state comes from Bridge */ }
         }
 
-        public SimpleMcpServer(Type commandSourceType)
+        public SimpleMcpServer(Type commandSourceType) : this(commandSourceType, McpServerConfig.Load())
+        {
+        }
+
+        public SimpleMcpServer(Type commandSourceType, McpServerConfig config)
         {
             //DisableServerHeader(); //Prob not needed
             _targetType = commandSourceType;
-            string IPAddress = "+";
-            Console.WriteLine("MCP server lising on " + IPAddress);
-            _listener.Prefixes.Add("http://" + IPAddress + ":50300/sse/"); //Request come in without a trailing '/' but are still handled
-            _listener.Prefixes.Add("http://" + IPAddress + ":50300/message/");
+            _config = config ?? McpServerConfig.Load();
+            
+            string baseUrl = _config.GetBaseUrl();
+            Console.WriteLine($"MCP server listening on {baseUrl}");
+            Console.WriteLine($"Connect via: {_config.GetDisplayUrl()}");
+            
+            _listener.Prefixes.Add($"{baseUrl}sse/"); //Request come in without a trailing '/' but are still handled
+            _listener.Prefixes.Add($"{baseUrl}message/");
 
             //_listener.Prefixes.Add("http://127.0.0.1:50300/sse/"); //Request come in without a trailing '/' but are still handled
             //_listener.Prefixes.Add("http://127.0.0.1:50300/message/");
@@ -979,6 +988,6 @@ namespace DotNetPlugin
 
 
 
-
+       
     }
 }

@@ -86,14 +86,17 @@ namespace DotNetPlugin
         }
 
         static SimpleMcpServer GSimpleMcpServer;
+        static McpServerConfig GMcpServerConfig;
 
         [Command("StartMCPServer", DebugOnly = false)]
         public static void cbStartMCPServer(string[] args)
         {
             Console.WriteLine("Starting MCPServer");
-            GSimpleMcpServer = new SimpleMcpServer(typeof(DotNetPlugin.Plugin));
+            GMcpServerConfig = McpServerConfig.Load();
+            GSimpleMcpServer = new SimpleMcpServer(typeof(DotNetPlugin.Plugin), GMcpServerConfig);
             GSimpleMcpServer.Start();
             Console.WriteLine("MCPServer Started");
+            Console.WriteLine($"MCP Server URL: {GMcpServerConfig.GetDisplayUrl()}");
         }
 
         [Command("StopMCPServer", DebugOnly = false)]
@@ -103,6 +106,25 @@ namespace DotNetPlugin
             GSimpleMcpServer.Stop();
             GSimpleMcpServer = null;
             Console.WriteLine("MCPServer Stopped");
+        }
+
+        /// <summary>
+        /// Gets the current MCP server configuration.
+        /// </summary>
+        public static McpServerConfig GetMcpServerConfig()
+        {
+            if (GMcpServerConfig == null)
+                GMcpServerConfig = McpServerConfig.Load();
+            return GMcpServerConfig;
+        }
+
+        /// <summary>
+        /// Sets and saves the MCP server configuration.
+        /// </summary>
+        public static void SetMcpServerConfig(McpServerConfig config)
+        {
+            GMcpServerConfig = config;
+            config.Save();
         }
 
         /// <summary>
@@ -1343,10 +1365,11 @@ namespace DotNetPlugin
                 output.AppendLine($"{"Frame",-5} {"Frame Addr",-18} {"Return Addr",-18} {"Size",-10} {"Module",-25} {"Label/Symbol",-40} {"Comment"}");
                 output.AppendLine(new string('-', 130));
 
-                // Allocate native buffers ONCE outside the loop if possible,
-                // but since they are modified by the native call, it might be safer
-                // to allocate/free them inside the loop if issues arise.
-                // Let's try allocating inside for safety with ref struct modification.
+                // --- Manual Marshalling Setup ---
+                IntPtr ptrModule = IntPtr.Zero;
+                IntPtr ptrLabel = IntPtr.Zero;
+                IntPtr ptrComment = IntPtr.Zero;
+                BRIDGE_ADDRINFO_NATIVE addrInfo = new BRIDGE_ADDRINFO_NATIVE(); // Must be NATIVE struct
 
                 for (int i = 0; i < callstackFrames.Count; i++)
                 {
@@ -1354,12 +1377,6 @@ namespace DotNetPlugin
                     string moduleStr = "N/A";
                     string labelStr = "N/A";
                     string commentStr = "";
-
-                    // --- Manual Marshalling Setup ---
-                    IntPtr ptrModule = IntPtr.Zero;
-                    IntPtr ptrLabel = IntPtr.Zero;
-                    IntPtr ptrComment = IntPtr.Zero;
-                    BRIDGE_ADDRINFO_NATIVE addrInfo = new BRIDGE_ADDRINFO_NATIVE(); // Must be NATIVE struct
 
                     try // Use try/finally to guarantee freeing allocated memory
                     {
@@ -1427,7 +1444,6 @@ namespace DotNetPlugin
                         if (ptrComment != IntPtr.Zero) Marshal.FreeHGlobal(ptrComment);
                     }
                     // --- End Manual Marshalling ---
-
 
                     // Format the output line
                     output.AppendLine($"{$"[{i}]",-5} 0x{frame.FrameAddress:X16} 0x{frame.ReturnAddress:X16} {($"0x{frame.FrameSize:X}"),-10} {moduleStr,-25} {labelStr,-40} {commentStr}");

@@ -1,5 +1,5 @@
 # X64Dbg MCP Server (plugin)
-This project is a starting point for building an MCP (Memory Command Protocol) server plugin for x96/x64/x32dbg https://github.com/x64dbg/x64dbg/ using C# on the classic Windows-only .NET Framework platform (No ASP.NET Core hosting required).
+This project is a starting point for building an MCP (Model Context Protocol) server plugin for x96/x64/x32dbg https://github.com/x64dbg/x64dbg/ using C# on the classic Windows-only .NET Framework platform (No ASP.NET Core hosting required).
 
 The plugin acts as a lightweight HTTP interface bridge between an MCP client and the debugger, allowing you to have an LLM MCP client interactively send commands to inspect memory, disassemble, query registers, manipulate labels/comments, and more—all remotely and programmatically.
 

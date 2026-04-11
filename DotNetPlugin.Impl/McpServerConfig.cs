@@ -15,6 +15,23 @@ namespace DotNetPlugin
 
         private static string _configPath;
 
+        private static string ResolveConfigDirectory()
+        {
+            var assemblyLocation = typeof(McpServerConfig).Assembly.Location;
+            if (!string.IsNullOrWhiteSpace(assemblyLocation))
+            {
+                var assemblyDir = Path.GetDirectoryName(assemblyLocation);
+                if (!string.IsNullOrWhiteSpace(assemblyDir))
+                    return assemblyDir;
+            }
+
+            var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+            if (!string.IsNullOrWhiteSpace(baseDirectory))
+                return baseDirectory;
+
+            return Environment.CurrentDirectory;
+        }
+
         /// <summary>
         /// Gets the path to the configuration file in the plugin directory.
         /// </summary>
@@ -24,8 +41,7 @@ namespace DotNetPlugin
             {
                 if (_configPath == null)
                 {
-                    var assemblyDir = Path.GetDirectoryName(typeof(McpServerConfig).Assembly.Location);
-                    _configPath = Path.Combine(assemblyDir, "mcp_config.json");
+                    _configPath = Path.Combine(ResolveConfigDirectory(), "mcp_config.json");
                 }
                 return _configPath;
             }

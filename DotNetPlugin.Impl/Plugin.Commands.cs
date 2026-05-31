@@ -88,7 +88,7 @@ namespace DotNetPlugin
         static SimpleMcpServer GSimpleMcpServer;
         static McpServerConfig GMcpServerConfig;
 
-        [Command("StartMCPServer", DebugOnly = false)]
+        [Command("StartMCPServer", DebugOnly = false, Category = CommandCategory.GeneralPurpose)]
         public static void cbStartMCPServer(string[] args)
         {
             Console.WriteLine("Starting MCPServer");
@@ -99,7 +99,7 @@ namespace DotNetPlugin
             Console.WriteLine($"MCP Server URL: {GMcpServerConfig.GetDisplayUrl()}");
         }
 
-        [Command("StopMCPServer", DebugOnly = false)]
+        [Command("StopMCPServer", DebugOnly = false, Category = CommandCategory.GeneralPurpose)]
         public static void cbStopMCPServer(string[] args)
         {
             Console.WriteLine("Stopping MCPServer");
@@ -140,6 +140,7 @@ namespace DotNetPlugin
         /// </summary>
         /// <param name="command">The debugger command string to execute.</param>
         /// <returns>True if the command executed successfully, false otherwise.</returns>
+        /*
         [Command("ExecuteDebuggerCommand", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Example: ExecuteDebuggerCommand command=init c:\\Path\\To\\Program.exe\r\nNote: See ListDebuggerCommands for list of applicable commands.")]
         public static bool ExecuteDebuggerCommand(string command)
         {
@@ -153,6 +154,7 @@ namespace DotNetPlugin
             
             return DbgCmdExec(command);
         }
+        */
 
         private static bool ExecuteBpListSafely()
         {
@@ -198,6 +200,135 @@ namespace DotNetPlugin
             {
                 Console.WriteLine($"Error executing bplist safely: {ex.Message}");
                 return false;
+            }
+        }
+
+        [Command("SearchForStrings", DebugOnly = false, MCPOnly = true, Category = CommandCategory.Searching,
+MCPCmdDescription = "Searches memory for a specific text string.\n" +
+                    "encodingType: Must be exactly 'ascii' or 'utf16'.\n" +
+                    "startAddress: (Optional) Start address. Defaults to '0'.")]
+        // Notice how we define exact parameter names here instead of an array!
+        public static string ExecuteSearchForStrings(string searchText, string encodingType, string startAddress = "0")
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ExecuteSearchForStrings)}");
+            Console.WriteLine($"  - {nameof(searchText)}   : {searchText}");
+            Console.WriteLine($"  - {nameof(encodingType)} : {encodingType}");
+            Console.WriteLine($"  - {nameof(startAddress)} : {startAddress}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                encodingType = encodingType.ToLower();
+
+                byte[] stringBytes;
+                if (encodingType == "ascii")
+                    stringBytes = System.Text.Encoding.ASCII.GetBytes(searchText);
+                else if (encodingType == "utf16")
+                    stringBytes = System.Text.Encoding.Unicode.GetBytes(searchText);
+                else
+                    return "Error: encodingType must be 'ascii' or 'utf16'.";
+
+                string hexPattern = BitConverter.ToString(stringBytes).Replace("-", "");
+                string commandString = $"findallmem {startAddress}, {hexPattern}, -1";
+
+                bool success = Bridge.DbgCmdExecDirect(commandString);
+                if (!success) return $"Error: x64dbg rejected the search. Command sent: {commandString}";
+
+                nuint count = Bridge.DbgValFromString("ref.count()");
+                if (count == 0) return $"0 occurrences found for '{searchText}'.";
+
+                List<string> foundAddresses = new List<string>();
+                for (nuint i = 0; i < count; i++)
+                {
+                    nuint address = Bridge.DbgValFromString($"ref.addr({i})");
+
+                    if (address == 0) continue;
+
+                    foundAddresses.Add($"0x{address:X}");
+                    if (i >= 100)
+                    {
+                        foundAddresses.Add("... [Truncated]");
+                        break;
+                    }
+                }
+
+                return $"Found {count} occurrences of '{searchText}' at:\n" + string.Join("\n", foundAddresses);
+            }
+            catch (Exception e)
+            {
+                return $"Exception occurred: {e.Message}";
+            }
+        }
+
+        [Command("FindAllMem", DebugOnly = false, MCPOnly = true, Category = CommandCategory.Searching,
+ MCPCmdDescription = "Searches memory for a specific hex byte pattern.\n" +
+                     "startAddress: Address to start searching from (e.g., '0x7FF6B2000000').\n" +
+                     "bytePattern: Byte pattern with optional wildcards. (e.g., 'EB0?90??8D'). Spaces are safely stripped.\n" +
+                     "searchSize: (Optional) Size of data to search. Default is entire map '-1'.\n" +
+                     "moduleFilter: (Optional) Set to 'user', 'system', or 'module' to filter.")]
+        public static string ExecuteFindAllMem(string startAddress, string bytePattern, string searchSize = "-1", string moduleFilter = "")
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ExecuteFindAllMem)}");
+            Console.WriteLine($"  - {nameof(startAddress)}  : {startAddress}");
+            Console.WriteLine($"  - {nameof(bytePattern)}   : {bytePattern}");
+            Console.WriteLine($"  - {nameof(searchSize)}    : {searchSize}");
+            Console.WriteLine($"  - {nameof(moduleFilter)}  : {moduleFilter}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                // 1. Sanitize the byte pattern (x64dbg command line usually chokes on spaces in hex strings)
+                bytePattern = bytePattern.Replace(" ", "");
+
+                // 2. Construct the command string dynamically based on provided arguments
+                string commandString = $"findallmem {startAddress}, {bytePattern}, {searchSize}";
+
+                // Append the module filter if the LLM provided one
+                if (!string.IsNullOrWhiteSpace(moduleFilter))
+                {
+                    commandString += $", {moduleFilter}";
+                }
+
+                bool success = Bridge.DbgCmdExecDirect(commandString);
+                if (!success)
+                {
+                    return $"Error: x64dbg rejected the command syntax -> {commandString}";
+                }
+
+                // 3. Query x64dbg for the number of occurrences using DbgValFromString
+                nuint count = Bridge.DbgValFromString("ref.count()");
+
+                if (count == 0)
+                {
+                    return $"0 occurrences found for pattern '{bytePattern}'.";
+                }
+
+                // 4. If matches were found, query the exact memory addresses
+                List<string> foundAddresses = new List<string>();
+
+                // x64dbg limits GUI references, but we can iterate through them programmatically
+                for (nuint i = 0; i < count; i++)
+                {
+                    // The expression "ref.addr(i)" gets the address at the specific index
+                    nuint address = Bridge.DbgValFromString($"ref.addr({i})");
+
+                    // Format it nicely as a hex pointer (e.g., 0x7FF6B2001234)
+                    foundAddresses.Add($"0x{address:X}");
+
+                    // Hard cap so you don't overload the LLM context window 
+                    // if it accidentally finds 50,000 matches.
+                    if (i >= 100)
+                    {
+                        foundAddresses.Add("... [Truncated for LLM context size]");
+                        break;
+                    }
+                }
+
+                return $"Found {count} occurrences at the following addresses:\n" + string.Join("\n", foundAddresses);
+            }
+            catch (Exception e)
+            {
+                return $"Exception occurred: {e.Message}";
             }
         }
 
@@ -303,7 +434,8 @@ namespace DotNetPlugin
             }
         }
 
-        [Command("ExecuteDebuggerCommandWithVar", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Execute a command then return a debugger variable. Example: ExecuteDebuggerCommandWithVar command=init notepad.exe, resultVar=$pid, pollMs=100, pollTimeoutMs=5000")]
+        /*
+        [Command("ExecuteDebuggerCommandWithVar", DebugOnly = false, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Execute a command then return a debugger variable. Example: ExecuteDebuggerCommandWithVar command=init notepad.exe, resultVar=$pid, pollMs=100, pollTimeoutMs=5000")]
         public static string ExecuteDebuggerCommandWithVar(string command, string resultVar = "$result", int pollMs = 0, int pollTimeoutMs = 2000)
         {
             try
@@ -333,27 +465,66 @@ namespace DotNetPlugin
                 return $"[ExecuteDebuggerCommandWithVar] Error: {ex.Message}";
             }
         }
+        */
+        [Command("SetBreakpoint", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions,
+    MCPCmdDescription = "Sets a software execution breakpoint (INT3).\ntarget: The hex address (e.g., '0x140001000') or API symbol. For Windows APIs, include the module name (e.g., 'user32:MessageBoxW').")]
+        public static string ExecuteSetBreakpoint(string target)
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ExecuteSetBreakpoint)}");
+            Console.WriteLine($"  - {nameof(target)} : {target}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (string.IsNullOrWhiteSpace(target))
+                    return "Error: Target parameter is required.";
 
-        [Command("ExecuteDebuggerCommandWithOutput", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Execute a command and return captured log output. Example: ExecuteDebuggerCommandWithOutput command=\"bplist\"")]
-        public static string ExecuteDebuggerCommandWithOutput(string command, int settleDelayMs = 200)
+                // Strip quotes if the LLM accidentally added them
+                target = target.Replace("\"", "").Replace("'", "");
+
+                // 1. Construct the x64dbg command
+                string commandString = $"bp {target}";
+
+                // 2. Use your existing DbgCmdExecFunction to run it and capture the output
+                string result = DbgCmdExecFunction(commandString, 300);
+
+                // 3. The "Friendly" Interceptor: Guide the LLM if it makes a syntax mistake
+                if (result.Contains("Invalid addr") || result.Contains("Error setting breakpoint"))
+                {
+                    return $"Result: {result}\n\n" +
+                           "HINT: If you are trying to target a Windows API, x64dbg requires the module prefix. " +
+                           "Try prepending 'user32:', 'kernel32:', 'kernelbase:', or 'ntdll:' to the function name (e.g., 'user32:GetDlgItemTextW' or 'user32:SetWindowTextW'). " +
+                           "If it still fails, the target DLL may not be loaded into the process memory yet.";
+                }
+
+                return result;
+            }
+            catch (Exception e)
+            {
+                return $"Exception occurred while setting breakpoint: {e.Message}";
+            }
+        }
+        
+        //[Command("DbgCmdExec", DebugOnly = false, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Executes a native x64dbg command. WARNING: Use x64dbg syntax, NOT WinDbg syntax (e.g., use 'bp MessageBoxW' or 'bp user32:MessageBoxW', do NOT use '!').\\nExamples:\\n- 'run' (continue execution)\\n- 'step' (step into)\\n- 'bp GetDlgItemTextW' (set breakpoint)\\n- 'bc *' (clear all breakpoints)\\n- 'analx' (analyze executable)\"). Execute the command on the command processing thread.\r\n\r\nbool DbgCmdExec(const char* cmd);\r\nParameters\r\ncmd The command string in UTF-8 encoding\r\n\r\nReturn Value\r\ntrue if the command is sent to the command processing thread for asynchronous execution, false otherwise.\r\n\r\nExample\r\nDbgCmdExec(\"run\");")]
+        public static string DbgCmdExecFunction(string command, int settleDelayMs = 200)
         {
             string tempFile = null;
             try
             {
-                Console.WriteLine("Executing DebuggerCommandWithOutput: " + command);
+                Console.WriteLine("Executing DbgCmdExec: " + command);
 
                 tempFile = Path.Combine(Path.GetTempPath(), "x64dbg_cmd_" + Guid.NewGuid().ToString("N") + ".log");
 
                 // Start redirection
-                DbgCmdExec($"LogRedirect \"{tempFile}\"");
+                Bridge.DbgCmdExec($"LogRedirect \"{tempFile}\"");
                 Thread.Sleep(50);
 
                 // Execute the actual command
-                var ok = DbgCmdExec(command);
+                var ok = Bridge.DbgCmdExec(command);
                 Thread.Sleep(settleDelayMs);
 
                 // Stop redirection
-                DbgCmdExec("LogRedirectStop");
+                Bridge.DbgCmdExec("LogRedirectStop");
                 Thread.Sleep(100);
 
                 // Read file with simple retries
@@ -401,10 +572,13 @@ namespace DotNetPlugin
                 try { if (!string.IsNullOrEmpty(tempFile) && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
             }
         }
-
-        [Command("GetBreakpointInfo", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Get breakpoint information using alternative methods. Example: GetBreakpointInfo")]
+        
+        [Command("GetBreakpointInfo", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Get breakpoint information using alternative methods. Example: GetBreakpointInfo")]
         public static string GetBreakpointInfo()
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(GetBreakpointInfo)}");
+            Console.WriteLine("----------------------------------------");
             try
             {
                 Console.WriteLine("Getting breakpoint information using alternative methods...");
@@ -433,7 +607,7 @@ namespace DotNetPlugin
                 try
                 {
                     // Use ExecuteDebuggerCommandWithOutput which has better error handling
-                    var result = ExecuteDebuggerCommandWithOutput("bplist", 500);
+                    var result = DbgCmdExecFunction("bplist", 500);
                     if (!string.IsNullOrEmpty(result))
                     {
                         output.AppendLine("Breakpoint list:");
@@ -457,8 +631,88 @@ namespace DotNetPlugin
             }
         }
 
-        [Command("ListDebuggerCommands", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Example: ListDebuggerCommands")]
-        public static string ListDebuggerCommands(string subject = "")
+
+        [Command("ListCommandsByCategory", DebugOnly = false, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "List available MCP commands by category. Example: ListCommandsByCategory category=Searching")]
+        public static string ListCommandsByCategory(string category = "")
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ListCommandsByCategory)}");
+            Console.WriteLine($"  - {nameof(category)} : {category}");
+            Console.WriteLine("----------------------------------------");
+            // 1. Explicitly fully-qualify System.Reflection.BindingFlags to prevent namespace collisions
+            // with DotNetPlugin.NativeBindings.Script.Module. We use typeof(Plugin) since this is a static method.
+            var pluginMethods = typeof(Plugin).GetMethods(
+                System.Reflection.BindingFlags.DeclaredOnly |
+                System.Reflection.BindingFlags.Static |
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Public);
+
+            // 2. Map the methods without relying on the System.Reflection extension methods
+            var commandList = pluginMethods
+                .SelectMany(method => method.GetCustomAttributes(typeof(CommandAttribute), false)
+                    .Cast<CommandAttribute>()
+                    .Select(attribute => new
+                    {
+                        Name = attribute.Name ?? method.Name,
+                        Category = attribute.Category.ToString(),
+                        Description = attribute.MCPCmdDescription ?? "No description provided.",
+                        X64DbgOnly = attribute.X64DbgOnly
+                    }))
+                .Where(x => !x.X64DbgOnly)
+                .ToList();
+
+            // 3. Scenario A: No specific category provided. List populated categories.
+            if (string.IsNullOrWhiteSpace(category))
+            {
+                var availableCategories = commandList
+                    .Select(c => c.Category)
+                    .Distinct()
+                    .OrderBy(c => c)
+                    .ToList();
+
+                var output = new System.Text.StringBuilder();
+                output.AppendLine("Available command categories:");
+
+                foreach (var cat in availableCategories)
+                {
+                    output.AppendLine($"- {cat}");
+                }
+
+                output.AppendLine("\nExample usage:");
+                output.AppendLine("ListCommandsByCategory category=Searching");
+
+                return output.ToString();
+            }
+
+            // 4. Scenario B: A specific category was requested
+            var targetCommands = commandList
+                .Where(c => string.Equals(c.Category, category.Trim(), StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (targetCommands.Count > 0)
+            {
+                var output = new System.Text.StringBuilder();
+                output.AppendLine($"Commands in category '{category}':");
+                output.AppendLine(new string('-', 50));
+
+                foreach (var cmd in targetCommands)
+                {
+                    output.AppendLine($"Command: {cmd.Name}");
+                    output.AppendLine($"Description: {cmd.Description}");
+                    output.AppendLine(); // Spacer
+                }
+
+                return output.ToString().TrimEnd();
+            }
+
+            // 5. Scenario C: Invalid or empty category requested
+            return $"Unknown category '{category}'. Run ListCommandsByCategory without arguments to see available categories.";
+        }
+
+        /*
+        [Command("ListDebuggerCommandsByResFile", DebugOnly = false, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: ListDebuggerCommands")]
+        public static string ListDebuggerCommandsByResFile(string subject = "")
         {
             subject = subject?.Trim().ToLowerInvariant();
 
@@ -483,8 +737,9 @@ namespace DotNetPlugin
 
             return "Unknown subject group. Try one of:\n- DebugControl\n- GUI\n- Search\n- ThreadControl";
         }
+        */
 
-        [Command("DbgValFromString", DebugOnly = false, MCPOnly = true, MCPCmdDescription = "Example: DbgValFromString value=$pid")]
+        //[Command("DbgValFromString", DebugOnly = false, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: DbgValFromString value=$pid")]
         public static string DbgValFromString(string value)// = "$hProcess"
         {
             Console.WriteLine("Executing DbgValFromString: " + value);
@@ -496,12 +751,168 @@ namespace DotNetPlugin
             return Bridge.DbgValFromString(value);
         }
 
+        /*
+        [Command("strref", DebugOnly = true, MCPOnly = true, Category = CommandCategory.Searching, MCPCmdDescription = "Alias for refstr. Finds referenced text strings.")]
+        public static string ExecuteStrRef(string address = "", string size = "")
+        {
+            // Point the alias directly to the main function
+            return ExecuteRefStr(address, size);
+        }
+        */
 
+        [Command("refstr", DebugOnly = true, MCPOnly = true, Category = CommandCategory.Searching,
+    MCPCmdDescription = "Finds referenced text strings in a memory region.\naddress: (Optional) Start address to search (defaults to CIP).\nsize: (Optional) Size of data to search (e.g., '0x1000').")]
+        public static string ExecuteRefStr(string address = "", string size = "")
+        {
+
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ExecuteRefStr)}");
+            Console.WriteLine($"  - {nameof(address)} : {address}");
+            Console.WriteLine($"  - {nameof(size)}    : {size}");
+            Console.WriteLine("----------------------------------------");
+
+            try
+            {
+                // 1. Construct the command string dynamically
+                string commandString = "refstr";
+
+                var argsList = new System.Collections.Generic.List<string>();
+                if (!string.IsNullOrWhiteSpace(address))
+                    argsList.Add(address);
+
+                // x64dbg usually requires the address if you are providing the size
+                if (!string.IsNullOrWhiteSpace(size) && !string.IsNullOrWhiteSpace(address))
+                    argsList.Add(size);
+
+                if (argsList.Count > 0)
+                {
+                    // Join the arguments with commas as expected by x64dbg
+                    commandString += " " + string.Join(", ", argsList);
+                }
+
+                // 2. Execute the command in the x64dbg engine
+                bool success = Bridge.DbgCmdExecDirect(commandString);
+                if (!success)
+                {
+                    return $"Error: x64dbg rejected the command syntax -> {commandString}";
+                }
+
+                // 3. Query x64dbg for the number of string references found
+                nuint count = Bridge.DbgValFromString("ref.count()");
+
+                if (count == 0)
+                {
+                    return "0 string references found.";
+                }
+
+                // 4. Iterate through the reference view to extract the addresses
+                var foundAddresses = new System.Collections.Generic.List<string>();
+
+                for (nuint i = 0; i < count; i++)
+                {
+                    nuint refAddress = Bridge.DbgValFromString($"ref.addr({i})");
+                    foundAddresses.Add($"0x{refAddress:X}");
+
+                    // Hard cap at 100 addresses so we don't nuke the LLM context window 
+                    if (i >= 99)
+                    {
+                        foundAddresses.Add("... [Truncated for LLM context size]");
+                        break;
+                    }
+                }
+
+                return $"Found {count} string references at the following instruction addresses:\n" + string.Join("\n", foundAddresses);
+            }
+            catch (Exception e)
+            {
+                return $"Exception occurred while executing refstr: {e.Message}";
+            }
+        }
+
+        [Command("FindXrefs", DebugOnly = true, MCPOnly = true, Category = CommandCategory.Searching,
+    MCPCmdDescription = "Finds cross-references (xrefs) TO a specific memory address (e.g., where a string or function is called from).\ntargetAddress: The hex address to find references to (e.g., '0x140001000').")]
+        public static string ExecuteFindXrefs(string targetAddress)
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ExecuteFindXrefs)}");
+            Console.WriteLine($"  - {nameof(targetAddress)} : {targetAddress}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (string.IsNullOrWhiteSpace(targetAddress))
+                    return "Error: targetAddress is required.";
+
+                // 1. Execute the 'ref' command to find references TO the target address
+                string commandString = $"ref {targetAddress}";
+                bool success = Bridge.DbgCmdExecDirect(commandString);
+
+                if (!success)
+                {
+                    return $"Error: x64dbg rejected the command -> {commandString}";
+                }
+
+                // 2. Query the number of references found in the GUI reference view
+                nuint count = Bridge.DbgValFromString("ref.count()");
+
+                if (count == 0)
+                {
+                    return $"0 cross-references found pointing to {targetAddress}.";
+                }
+
+                // 3. Extract the referencing addresses and their disassembly
+                var foundAddresses = new System.Collections.Generic.List<string>();
+
+                for (nuint i = 0; i < count; i++)
+                {
+                    nuint refAddress = Bridge.DbgValFromString($"ref.addr({i})");
+
+                    // Disassemble at the referencing address to give the LLM immediate context
+                    var disasm = new Bridge.BASIC_INSTRUCTION_INFO();
+                    Bridge.DbgDisasmFastAt(refAddress, ref disasm);
+
+                    string instruction = disasm.size > 0 ? disasm.instruction : "<unable to disassemble>";
+
+                    foundAddresses.Add($"0x{refAddress:X} : {instruction}");
+
+                    // Hard cap to prevent context window explosion (50 is usually plenty for xrefs)
+                    if (i >= 49)
+                    {
+                        foundAddresses.Add("... [Truncated for LLM context size]");
+                        break;
+                    }
+                }
+
+                return $"Found {count} cross-references to {targetAddress}:\n" + string.Join("\n", foundAddresses);
+            }
+            catch (Exception e)
+            {
+                return $"Exception occurred while executing FindXrefs: {e.Message}";
+            }
+        }
+
+        /*
         [Command("ExecuteDebuggerCommandDirect", DebugOnly = false)]
         public static bool ExecuteDebuggerCommandDirect(string[] args)
         {
-            return ExecuteDebuggerCommandDirect(args);
+            try
+            {
+                string commandString = args[0];
+
+                // If there are arguments, append a space, then join the rest with commas
+                if (args.Length > 1)
+                {
+                    commandString += " " + string.Join(", ", args.Skip(1));
+                }
+                Console.WriteLine(commandString);
+                return Bridge.DbgCmdExecDirect(commandString);
+            }
+            catch(Exception e)
+            {
+                Console.WriteLine(e.ToString());
+                return false;
+            }
         }
+        */
 
         //[Command("ReadMemory", DebugOnly = false)]
         //public static bool ReadMemory(string[] args)
@@ -675,9 +1086,14 @@ namespace DotNetPlugin
         //    return success;
         //}
 
-        [Command("WriteMemToAddress", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: WriteMemToAddress address=0x12345678, byteString=0F FF 90")]
+        [Command("WriteMemToAddress", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: WriteMemToAddress address=0x12345678, byteString=0F FF 90")]
         public static string WriteMemToAddress(string address, string byteString)
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(WriteMemToAddress)}");
+            Console.WriteLine($"  - {nameof(address)}    : {address}");
+            Console.WriteLine($"  - {nameof(byteString)} : {byteString}");
+            Console.WriteLine("----------------------------------------");
             try
             {
                 if (string.IsNullOrWhiteSpace(byteString))
@@ -719,9 +1135,15 @@ namespace DotNetPlugin
             }
         }
 
-        [Command("CommentOrLabelAtAddress", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: CommentOrLabelAtAddress address=0x12345678, value=LabelTextGoeshere, mode=Label\r\nExample: CommentOrLabelAtAddress address=0x12345678, value=LabelTextGoeshere, mode=Comment\r\n")]
+        [Command("CommentOrLabelAtAddress", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: CommentOrLabelAtAddress address=0x12345678, value=LabelTextGoeshere, mode=Label\r\nExample: CommentOrLabelAtAddress address=0x12345678, value=LabelTextGoeshere, mode=Comment\r\n")]
         public static string CommentOrLabelAtAddress(string address, string value, string mode = "Label")
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(CommentOrLabelAtAddress)}");
+            Console.WriteLine($"  - {nameof(address)} : {address}");
+            Console.WriteLine($"  - {nameof(value)}   : {value}");
+            Console.WriteLine($"  - {nameof(mode)}    : {mode}");
+            Console.WriteLine("----------------------------------------");
             try
             {
                 bool success = false;
@@ -842,9 +1264,13 @@ namespace DotNetPlugin
         //    }
         //}
 
-        [Command("GetLabel", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: GetLabel addressStr=0x12345678")]
+        [Command("GetLabel", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: GetLabel addressStr=0x12345678")]
         public static string GetLabel(string addressStr)
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(GetLabel)}");
+            Console.WriteLine($"  - {nameof(addressStr)} : {addressStr}");
+            Console.WriteLine("----------------------------------------");
             try
             {
                 // Parse address (supports hex or decimal)
@@ -1229,9 +1655,10 @@ namespace DotNetPlugin
         }
 
 
-        [Command("GetAllModulesFromMemMap", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: GetAllModulesFromMemMap")]
+        [Command("GetAllModulesFromMemMap", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: GetAllModulesFromMemMap")]
         public static string GetAllModulesFromMemMap()
         {
+            Console.WriteLine("GetAllModulesFromMemMap() called");
             try
             {
                 // Update expected tuple type
@@ -1275,16 +1702,15 @@ namespace DotNetPlugin
         public static List<CallStackFrameInfo> GetCallStackFunc(int maxFrames = 32)
         {
             var callstack = new List<CallStackFrameInfo>();
-            byte[] addrBuffer = new byte[sizeof(ulong)]; // Buffer for reading addresses (nuint size)
+            byte[] addrBuffer = new byte[sizeof(ulong)];
 
             // Get initial stack pointers from the debugger
-            // Ensure DbgValFromString is correctly implemented via P/Invoke
             nuint rbp = DbgValFromStringAsNUInt("rbp");
             nuint rsp = DbgValFromStringAsNUInt("rsp");
             nuint currentRbp = rbp;
-            nuint previousRbp = 0; // To calculate frame size
+            nuint previousRbp = 0;
 
-            if (rbp == 0 || rbp < rsp) // Initial check if RBP is valid
+            if (rbp == 0 || rbp < rsp)
             {
                 Console.WriteLine("[GetCallStackFunc] Initial RBP is invalid or below RSP.");
                 return callstack;
@@ -1292,15 +1718,14 @@ namespace DotNetPlugin
 
             for (int i = 0; i < maxFrames; i++)
             {
-                // 1. Read Return Address from [RBP + 8] (or [RBP + sizeof(nuint)])
+                // 1. Read Return Address from [RBP + sizeof(nuint)]
                 if (!DbgMemRead(currentRbp + (nuint)sizeof(ulong), addrBuffer, (nuint)sizeof(ulong)))
                 {
                     Console.WriteLine($"[GetCallStackFunc] Failed to read return address at 0x{currentRbp + (nuint)sizeof(ulong):X}");
-                    break; // Stop if memory read fails
+                    break;
                 }
                 nuint returnAddress = (nuint)BitConverter.ToUInt64(addrBuffer, 0);
 
-                // Stop if return address is null (often end of chain)
                 if (returnAddress == 0)
                 {
                     Console.WriteLine("[GetCallStackFunc] Reached null return address.");
@@ -1311,15 +1736,16 @@ namespace DotNetPlugin
                 if (!DbgMemRead(currentRbp, addrBuffer, (nuint)sizeof(ulong)))
                 {
                     Console.WriteLine($"[GetCallStackFunc] Failed to read saved RBP at 0x{currentRbp:X}");
-                    break; // Stop if memory read fails
+                    break;
                 }
                 nuint nextRbp = (nuint)BitConverter.ToUInt64(addrBuffer, 0);
 
-                // Calculate frame size (difference between current and previous RBP)
-                // Size is only meaningful after the first frame
-                nuint frameSize = (previousRbp > 0 && currentRbp > previousRbp) ? 0 : // Avoid nonsensical size if RBP decreased
-                                  (previousRbp > 0) ? previousRbp - currentRbp : 0;
-
+                // Fixed: Stack grows down, so walking backwards means nextRbp > currentRbp
+                nuint frameSize = 0;
+                if (nextRbp > currentRbp)
+                {
+                    frameSize = nextRbp - currentRbp;
+                }
 
                 // Add collected info for this frame
                 callstack.Add(new CallStackFrameInfo
@@ -1329,131 +1755,380 @@ namespace DotNetPlugin
                     FrameSize = frameSize
                 });
 
-                // Update RBP for the next iteration
-                previousRbp = currentRbp; // Store current RBP before updating
+                // Update tracking variables
+                previousRbp = currentRbp;
                 currentRbp = nextRbp;
 
-                // Validate the next RBP value
-                if (currentRbp == 0 || currentRbp < rsp || currentRbp <= previousRbp) // RBP must be > RSP and generally increase (move down stack)
+                // Hardened Validation: next RBP must be higher in memory than the previous one
+                if (currentRbp == 0 || currentRbp < rsp || currentRbp <= previousRbp)
                 {
-                    Console.WriteLine($"[GetCallStackFunc] Invalid next RBP (0x{currentRbp:X}). Previous=0x{previousRbp:X}, RSP=0x{rsp:X}. Stopping walk.");
-                    break; // Stop if RBP becomes null, goes below RSP, or doesn't advance
+                    // If it's the end of the chain, log cleanly and exit without spamming
+                    break;
                 }
             }
 
             return callstack;
         }
 
-
-        [Command("GetCallStack", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: GetCallStack\r\nExample: GetCallStack, maxFrames=32")]
-        public static string GetCallStack(int maxFrames = 32)
+        [Command("run", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+    MCPCmdDescription = "Resumes the execution of the debugged process (equivalent to pressing F9 or typing 'run').")]
+        public static string ContinueExecution()
         {
-            // Define buffer sizes matching C++ MAX_ defines
-            const int MAX_MODULE_SIZE_BUFF = 256;
-            const int MAX_LABEL_SIZE_BUFF = 256;
-            const int MAX_COMMENT_SIZE_BUFF = 512;
-
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ContinueExecution)}");
+            Console.WriteLine("----------------------------------------");
             try
             {
-                var callstackFrames = GetCallStackFunc(maxFrames); // This still returns List<CallStackFrameInfo>
+                // 1. Verify the debugger is actually attached and active
+                if (!Bridge.DbgIsDebugging())
+                {
+                    return "Error: Debugger is not actively debugging a target process.";
+                }
+
+                // 2. Execute the native x64dbg 'run' command.
+                // Bumped to 250ms to give immediate TLS callbacks/initial breakpoints time to register.
+                string result = DbgCmdExecFunction("run", 250);
+
+                // 3. Check the ACTUAL status of the CPU after the settle delay
+                // If the process is still executing, explicitly tell the agent to halt and yield.
+                if (Bridge.DbgIsRunning())
+                {
+                    return "STATUS: RUNNING. The target process is now in a running state.";
+                }
+
+                // 4. If it's NOT running, it hit an immediate breakpoint, exception, or stepped.
+                if (string.IsNullOrEmpty(result) || result.Contains("Command executed successfully"))
+                {
+                    return "STATUS: PAUSED. Process resumed but hit an immediate breakpoint, TLS callback, or system event. Analyze the current address space.";
+                }
+
+                return $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception occurred while trying to continue execution: {ex.Message}\n{ex.StackTrace}";
+            }
+        }
+
+        [Command("StepInto", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Executes a single instruction, stepping INTO any call instructions encountered (F7).")]
+        public static string StepInto()
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(StepInto)}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                {
+                    return "Error: Process must be running and suspended to step.";
+                }
+
+                string result = DbgCmdExecFunction("sti", 100);
+                return string.IsNullOrEmpty(result) || result.Contains("Command executed successfully")
+                    ? "Success: Stepped into instruction."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in StepInto: {ex.Message}";
+            }
+        }
+
+        [Command("StepOver", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Executes a single instruction, stepping OVER subroutines/calls entirely (F8).")]
+        public static string StepOver()
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(StepOver)}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                {
+                    return "Error: Process must be running and suspended to step.";
+                }
+
+                string result = DbgCmdExecFunction("sto", 100);
+                return string.IsNullOrEmpty(result) || result.Contains("Command executed successfully")
+                    ? "Success: Stepped over block frame."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in StepOver: {ex.Message}";
+            }
+        }
+
+        [Command("StepOut", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Executes until the current function block encounters its return boundary (Ctrl+F9).")]
+        public static string StepOut()
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(StepOut)}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                {
+                    return "Error: Process must be running and suspended to step out.";
+                }
+
+                string result = DbgCmdExecFunction("rtr", 150);
+                return string.IsNullOrEmpty(result) || result.Contains("Command executed successfully")
+                    ? "Success: Execution advanced to target return layout statement."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in StepOut: {ex.Message}";
+            }
+        }
+
+
+        [Command("GetCallStack", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose,
+MCPCmdDescription = "Retrieves the current execution call stack thread frame history (via RBP frame walking).\n" +
+                    "Use this immediately after a breakpoint hits to trace back to " +
+                    "to locate the exact module address/function that originally called it.\n" +
+                    "maxFrames: (Optional) Maximum number of frames to traverse. Defaults to 32.")]
+        public static string GetCallStack(int maxFrames = 32)
+        {
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                {
+                    return "[GetCallStack] Debugger must be debugging an application";
+                }
+
+                if (Bridge.DbgIsRunning())
+                {
+                    return "[GetCallStack] Debugger must not be in a running state, pause execution to create a break point and trigger it to observe the stack.";
+                }
+
+                if (!Bridge.DbgIsRunLocked())
+                {
+                    return "[GetCallStack] Debugger must be in a running locked state to observe the stack.";
+                }
+
+                var callstackFrames = WalkStackFrames(maxFrames).ToList(); // Eagerly evaluate for count
 
                 if (callstackFrames.Count == 0)
+                {
                     return "[GetCallStack] Call stack could not be retrieved (check RBP validity or use debugger UI).";
+                }
 
                 var output = new StringBuilder();
                 output.AppendLine($"[GetCallStack] Retrieved {callstackFrames.Count} frames (RBP walk, may be inaccurate):");
-                output.AppendLine($"{"Frame",-5} {"Frame Addr",-18} {"Return Addr",-18} {"Size",-10} {"Module",-25} {"Label/Symbol",-40} {"Comment"}");
+                output.AppendLine($"{"Frame",-5} {"Frame Addr",-18} {"Return Addr",-18} {"Size",-10} {"Module",-25} {"Label Symbol",-40} {"Comment"}");
                 output.AppendLine(new string('-', 130));
-
-                // --- Manual Marshalling Setup ---
-                IntPtr ptrModule = IntPtr.Zero;
-                IntPtr ptrLabel = IntPtr.Zero;
-                IntPtr ptrComment = IntPtr.Zero;
-                BRIDGE_ADDRINFO_NATIVE addrInfo = new BRIDGE_ADDRINFO_NATIVE(); // Must be NATIVE struct
 
                 for (int i = 0; i < callstackFrames.Count; i++)
                 {
                     var frame = callstackFrames[i];
-                    string moduleStr = "N/A";
-                    string labelStr = "N/A";
-                    string commentStr = "";
+                    TryResolveSymbols(frame.ReturnAddress, out AddressSymbols symbols);
 
-                    try // Use try/finally to guarantee freeing allocated memory
-                    {
-                        // 1. Allocate native buffers
-                        ptrModule = Marshal.AllocHGlobal(MAX_MODULE_SIZE_BUFF);
-                        ptrLabel = Marshal.AllocHGlobal(MAX_LABEL_SIZE_BUFF);
-                        ptrComment = Marshal.AllocHGlobal(MAX_COMMENT_SIZE_BUFF);
+                    // Cast nuint/UIntPtr to ulong explicitly to support hex formatting string modifiers
+                    string frameAddrHex = ((ulong)frame.FrameAddress).ToString("X16");
+                    string returnAddrHex = ((ulong)frame.ReturnAddress).ToString("X16");
+                    string frameSizeHex = ((ulong)frame.FrameSize).ToString("X");
 
-                        // Initialize buffers slightly for safety (optional, helps debugging)
-                        Marshal.WriteByte(ptrModule, 0, 0);
-                        Marshal.WriteByte(ptrLabel, 0, 0);
-                        Marshal.WriteByte(ptrComment, 0, 0);
-
-                        // 2. Prepare the struct
-                        addrInfo.module = ptrModule;
-                        addrInfo.label = ptrLabel;
-                        addrInfo.comment = ptrComment;
-                        // Set flags for desired info
-                        addrInfo.flags = ADDRINFOFLAGS.flagmodule | ADDRINFOFLAGS.flaglabel | ADDRINFOFLAGS.flagcomment;
-
-                        // 3. Call the native function (use correct struct type)
-                        bool success = DbgAddrInfoGet(frame.ReturnAddress, 0, ref addrInfo); // Pass NATIVE struct
-
-                        // 4. Read results back from native buffers if call succeeded
-                        if (success)
-                        {
-                            moduleStr = Marshal.PtrToStringAnsi(addrInfo.module) ?? "N/A"; // Read from buffer
-                            labelStr = Marshal.PtrToStringAnsi(addrInfo.label) ?? "N/A";   // Read from buffer
-
-                            string retrievedComment = Marshal.PtrToStringAnsi(addrInfo.comment) ?? "";
-                            if (!string.IsNullOrEmpty(retrievedComment))
-                            {
-                                // Handle auto-comment marker (\1) if present
-                                if (retrievedComment.Length > 0 && retrievedComment[0] == '\x01')
-                                {
-                                    commentStr = retrievedComment.Length > 1 ? retrievedComment.Substring(1) : "";
-                                }
-                                else
-                                {
-                                    commentStr = retrievedComment;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // Fallback if DbgAddrInfoGet fails
-                            var modInfoOnly = new BRIDGE_ADDRINFO_NATIVE { flags = ADDRINFOFLAGS.flagmodule, module = ptrModule };
-                            Marshal.WriteByte(ptrModule, 0, 0); // Clear buffer before reuse
-                            if (DbgAddrInfoGet(frame.ReturnAddress, 0, ref modInfoOnly))
-                            {
-                                moduleStr = Marshal.PtrToStringAnsi(modInfoOnly.module) ?? "Lookup Failed";
-                            }
-                            else
-                            {
-                                moduleStr = "Lookup Failed";
-                            }
-                            labelStr = ""; // Clear label/comment if lookup failed
-                            commentStr = "";
-                        }
-                    }
-                    finally // 5. CRITICAL: Free allocated native memory
-                    {
-                        if (ptrModule != IntPtr.Zero) Marshal.FreeHGlobal(ptrModule);
-                        if (ptrLabel != IntPtr.Zero) Marshal.FreeHGlobal(ptrLabel);
-                        if (ptrComment != IntPtr.Zero) Marshal.FreeHGlobal(ptrComment);
-                    }
-                    // --- End Manual Marshalling ---
-
-                    // Format the output line
-                    output.AppendLine($"{$"[{i}]",-5} 0x{frame.FrameAddress:X16} 0x{frame.ReturnAddress:X16} {($"0x{frame.FrameSize:X}"),-10} {moduleStr,-25} {labelStr,-40} {commentStr}");
-                } // End for loop
+                    // Format the output line with clean alignments
+                    output.AppendLine(
+                        $"{$"[ {i}]",-5} 0x{frameAddrHex} 0x{returnAddrHex} 0x{frameSizeHex,-8} {symbols.Module,-25} {symbols.Label,-40} {symbols.Comment}");
+                }
 
                 return output.ToString().TrimEnd(); // remove trailing newline
             }
             catch (Exception ex)
             {
                 return $"[GetCallStack] Error: {ex.Message}\n{ex.StackTrace}";
+            }
+        }
+
+        public class AddressSymbols
+        {
+            public string Module { get; set; } = "N/A";
+            public string Label { get; set; } = "N/A";
+            public string Comment { get; set; } = "";
+        }
+        private static bool TryGetInitialStackPointers(out nuint rbp, out nuint rsp)
+        {
+            rbp = DbgValFromStringAsNUInt("rbp");
+            rsp = DbgValFromStringAsNUInt("rsp");
+
+            if (rbp == 0 || rbp < rsp)
+            {
+                Console.WriteLine("[GetCallStackFunc] Initial RBP is invalid or below RSP.");
+                return false;
+            }
+            return true;
+        }
+
+        public static IEnumerable<CallStackFrameInfo> WalkStackFrames(int maxFrames = 32)
+        {
+            if (!TryGetInitialStackPointers(out nuint rbp, out nuint rsp))
+            {
+                yield break; // Stop iteration if initial pointers are invalid
+            }
+
+            nuint currentRbp = rbp;
+            nuint previousRbp = 0;
+
+            for (int i = 0; i < maxFrames; i++)
+            {
+                if (!TryGetFrameInfo(currentRbp, out nuint returnAddress, out nuint nextRbp))
+                {
+                    break; // Stop if we can't read frame info (end of stack or invalid memory)
+                }
+
+                nuint frameSize = CalculateFrameSize(currentRbp, previousRbp);
+
+                yield return new CallStackFrameInfo
+                {
+                    FrameAddress = currentRbp,
+                    ReturnAddress = returnAddress,
+                    FrameSize = frameSize
+                };
+
+                previousRbp = currentRbp;
+                currentRbp = nextRbp;
+
+                if (!IsNextRbpValid(currentRbp, previousRbp, rsp))
+                {
+                    break; // Stop if the next frame pointer is invalid
+                }
+            }
+        }
+        private static bool IsNextRbpValid(nuint currentRbp, nuint previousRbp, nuint rsp)
+        {
+            if (currentRbp == 0 || currentRbp < rsp || currentRbp <= previousRbp)
+            {
+                Console.WriteLine($"[GetCallStackFunc] Invalid next RBP (0x{currentRbp:X}). Previous=0x{previousRbp:X}, RSP=0x{rsp:X}. Stopping walk.");
+                return false;
+            }
+            return true;
+        }
+        private static nuint CalculateFrameSize(nuint currentRbp, nuint previousRbp)
+        {
+            if (previousRbp == 0)
+            {
+                return 0;
+            }
+            // Avoid nonsensical size if RBP decreased or is not what we expect
+            if (currentRbp > previousRbp)
+            {
+                return 0;
+            }
+            return previousRbp - currentRbp;
+        }
+
+        private static bool TryReadNuintFromMemory(nuint address, out nuint value)
+        {
+            byte[] buffer = new byte[sizeof(ulong)];
+            if (DbgMemRead(address, buffer, (nuint)sizeof(ulong)))
+            {
+                value = (nuint)BitConverter.ToUInt64(buffer, 0);
+                return true;
+            }
+            value = 0;
+            Console.WriteLine($"[GetCallStackFunc] Failed to read memory at 0x{address:X}");
+            return false;
+        }
+
+        private static bool TryGetFrameInfo(nuint currentRbp, out nuint returnAddress, out nuint nextRbp)
+        {
+            returnAddress = 0;
+            nextRbp = 0;
+
+            if (!TryReadNuintFromMemory(currentRbp + (nuint)sizeof(ulong), out returnAddress))
+            {
+                return false;
+            }
+
+            if (returnAddress == 0)
+            {
+                Console.WriteLine("[GetCallStackFunc] Reached null return address.");
+                return false;
+            }
+
+            return TryReadNuintFromMemory(currentRbp, out nextRbp);
+        }
+
+        private static bool TryResolveSymbols(nuint address, out AddressSymbols symbols)
+        {
+            symbols = new AddressSymbols();
+            const int MAX_MODULE_SIZE_BUFF = 256;
+            const int MAX_LABEL_SIZE_BUFF = 256;
+            const int MAX_COMMENT_SIZE_BUFF = 512;
+
+            IntPtr ptrModule = IntPtr.Zero;
+            IntPtr ptrLabel = IntPtr.Zero;
+            IntPtr ptrComment = IntPtr.Zero;
+
+            try
+            {
+                ptrModule = Marshal.AllocHGlobal(MAX_MODULE_SIZE_BUFF);
+                ptrLabel = Marshal.AllocHGlobal(MAX_LABEL_SIZE_BUFF);
+                ptrComment = Marshal.AllocHGlobal(MAX_COMMENT_SIZE_BUFF);
+
+                Marshal.WriteByte(ptrModule, 0, 0);
+                Marshal.WriteByte(ptrLabel, 0, 0);
+                Marshal.WriteByte(ptrComment, 0, 0);
+
+                var addrInfo = new BRIDGE_ADDRINFO_NATIVE
+                {
+                    module = ptrModule,
+                    label = ptrLabel,
+                    comment = ptrComment,
+                    flags = ADDRINFOFLAGS.flagmodule | ADDRINFOFLAGS.flaglabel | ADDRINFOFLAGS.flagcomment
+                };
+
+                if (DbgAddrInfoGet(address, 0, ref addrInfo))
+                {
+                    symbols.Module = Marshal.PtrToStringAnsi(addrInfo.module) ?? "N/A";
+                    symbols.Label = Marshal.PtrToStringAnsi(addrInfo.label) ?? "N/A";
+                    string retrievedComment = Marshal.PtrToStringAnsi(addrInfo.comment) ?? "";
+
+                    if (!string.IsNullOrEmpty(retrievedComment))
+                    {
+                        // Handle auto-comment marker (\1)
+                        symbols.Comment = (retrievedComment[0] == '\x01')
+                                          ? retrievedComment.Substring(1)
+                                          : retrievedComment;
+                    }
+                    return true;
+                }
+                else
+                {
+                    // Fallback to get module info only if the full query fails
+                    var modInfoOnly = new BRIDGE_ADDRINFO_NATIVE { flags = ADDRINFOFLAGS.flagmodule, module = ptrModule };
+                    Marshal.WriteByte(ptrModule, 0, 0); // Clear buffer before reuse
+
+                    if (DbgAddrInfoGet(address, 0, ref modInfoOnly))
+                    {
+                        symbols.Module = Marshal.PtrToStringAnsi(modInfoOnly.module) ?? "Lookup Failed";
+                    }
+                    else
+                    {
+                        symbols.Module = "Lookup Failed";
+                    }
+                    return false;
+                }
+            }
+            finally
+            {
+                if (ptrModule != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptrModule);
+                }
+                if (ptrLabel != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptrLabel);
+                }
+                if (ptrComment != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptrComment);
+                }
             }
         }
 
@@ -1519,9 +2194,12 @@ namespace DotNetPlugin
         //    return callstack;
         //}
 
-        [Command("GetAllActiveThreads", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: GetAllActiveThreads")]
+        [Command("GetAllActiveThreads", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: GetAllActiveThreads")]
         public static string GetAllActiveThreads()
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(GetAllActiveThreads)}");
+            Console.WriteLine("----------------------------------------");
             try
             {
                 // Get the list of threads with the extended information
@@ -1626,9 +2304,12 @@ namespace DotNetPlugin
 
 
 
-        [Command("GetAllRegisters", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: GetAllRegisters")]
+        [Command("GetAllRegisters", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: GetAllRegisters")]
         public static string GetAllRegistersAsStrings()
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(GetAllRegistersAsStrings)}");
+            Console.WriteLine("----------------------------------------");
             string[] regNames = new[]
             {
                 "rax", "rbx", "rcx", "rdx",
@@ -1657,9 +2338,14 @@ namespace DotNetPlugin
         }
 
 
-        [Command("ReadDismAtAddress", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: ReadDismAtAddress address=0x12345678, byteCount=100")]
+        [Command("ReadDismAtAddress", DebugOnly = true, Category = CommandCategory.DebugFunctions, MCPOnly = true, MCPCmdDescription = "Example: ReadDismAtAddress address=0x12345678, byteCount=100")]
         public static string ReadDismAtAddress(string address, int byteCount)
         {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ReadDismAtAddress)}");
+            Console.WriteLine($"  - {nameof(address)}   : {address}");
+            Console.WriteLine($"  - {nameof(byteCount)} : {byteCount}");
+            Console.WriteLine("----------------------------------------");
             try
             {
                 // Parse address string
@@ -1751,7 +2437,7 @@ namespace DotNetPlugin
         public static void DumpModuleToFile(string[] pfilepath)
         {
             string filePath = pfilepath[0];//@"C:\dump.txt"; // Hardcoded file path as requested
-            Console.WriteLine($"Attempting to dump module info to: {filePath}");
+            Console.WriteLine($"DumpModuleToFile: Attempting to dump module info to: {filePath}");
 
             try
             {
@@ -1833,8 +2519,6 @@ namespace DotNetPlugin
                     writer.WriteLine($"--- Disassembly for {modInfo.name} ({modInfo.@base.ToPtrString()} - {(modInfo.@base + modInfo.size).ToPtrString()}) ---");
                     writer.WriteLine("-----------------------------");
 
-
-
                     nuint currentAddr = modInfo.@base;
                     var endAddr = modInfo.@base + modInfo.size;
                     const int MAX_INSTRUCTIONS = 10000; // Limit number of instructions to prevent too large dumps
@@ -1905,7 +2589,6 @@ namespace DotNetPlugin
                             }
                         }
 
-
                         // Format and write instruction
                         string bytes = BitConverter.ToString(ReadMemory(currentAddr, (uint)disasm.size)); //.Replace("-", " ")
                         writer.WriteLine($"{currentAddr.ToPtrString()}  {bytes,-20}  {disasm.instruction}");
@@ -1927,11 +2610,6 @@ namespace DotNetPlugin
                         writer.WriteLine($"--- Instruction limit ({MAX_INSTRUCTIONS}) reached. Dump truncated. ---");
                     }
 
-
-
-
-
-
                     writer.WriteLine("-----------------------------");
                     writer.WriteLine("--- Dump Complete ---");
                 } // StreamWriter is automatically flushed and closed here
@@ -1952,18 +2630,5 @@ namespace DotNetPlugin
                 Console.Error.WriteLine(ex.StackTrace); // Log stack trace for debugging
             }
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
     }
 }

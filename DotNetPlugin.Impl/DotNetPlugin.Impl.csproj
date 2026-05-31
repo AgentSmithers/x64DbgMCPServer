@@ -49,12 +49,23 @@
       <AutoGen>True</AutoGen>
       <DependentUpon>Resources.resx</DependentUpon>
     </Compile>
+    <Compile Update="Properties\Settings.Designer.cs">
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Update="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
     </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
   </ItemGroup>
   <!--
     When plugin unloading is allowed (Debug builds):
@@ -98,19 +109,15 @@
 	  </PropertyGroup>
 
 	  <!-- 1. Copy the main plugin file (.dp64 or .dp32) -->
-	  <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')"
-			Command="xcopy /Y /I &quot;$(TargetDir)*.dp64&quot; &quot;$(PluginDestDir)\&quot;" />
+	  <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.dp64&quot; &quot;$(PluginDestDir)\&quot;" />
 
-	  <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')"
-			Command="xcopy /Y /I &quot;$(TargetDir)*.dp32&quot; &quot;$(PluginDestDir)\&quot;" />
+	  <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.dp32&quot; &quot;$(PluginDestDir)\&quot;" />
 
 	  <!-- 2. Copy the RemotingHelper DLL (required dependency) -->
-	  <Exec Condition="Exists('$(X96DbgRootPath)')"
-			Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.RemotingHelper.dll&quot; &quot;$(PluginDestDir)\&quot;" />
+	  <Exec Condition="Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.RemotingHelper.dll&quot; &quot;$(PluginDestDir)\&quot;" />
 
 	  <!-- 3. Optional: Copy the PDB for debugging in x96dbg if needed -->
-	  <Exec Condition="Exists('$(X96DbgRootPath)')"
-			Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.pdb&quot; &quot;$(PluginDestDir)\&quot;" />
+	  <Exec Condition="Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.pdb&quot; &quot;$(PluginDestDir)\&quot;" />
 	  
   </Target>
 </Project>

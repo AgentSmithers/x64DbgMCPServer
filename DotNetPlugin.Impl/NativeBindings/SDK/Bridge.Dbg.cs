@@ -1,4 +1,5 @@
 ﻿using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -53,10 +54,13 @@ namespace DotNetPlugin.NativeBindings.SDK
         }
 
         [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
-        public static extern bool DbgIsDebugging();
+        public static extern bool DbgIsDebugging(); //Active debugging session with a binary.
 
         [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
-        public static extern bool DbgIsRunning();
+        public static extern bool DbgIsRunning(); //This always seem to return true.
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgIsRunLocked(); // The debugger engine execution state machine is locked by an ongoing operation or script.
 
         [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
         public static extern nuint DbgModBaseFromName([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
@@ -502,5 +506,316 @@ namespace DotNetPlugin.NativeBindings.SDK
             public nuint addr;
             public XREFTYPE type;
         }
+
+
+        public enum SCRIPTBRANCHTYPE
+        {
+            scriptnobranch,
+            scriptjmp,
+            scriptjnejnz,
+            scriptjejz,
+            scriptjbjl,
+            scriptjajg,
+            scriptjbejle,
+            scriptjaejge,
+            scriptcall
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = NativePacking, CharSet = CharSet.Ansi)]
+        public struct SCRIPTBRANCH
+        {
+            public SCRIPTBRANCHTYPE type;
+            public int dest;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string branchlabel;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = NativePacking)]
+        public struct SELECTIONDATA
+        {
+            public nuint start;
+            public nuint end;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = NativePacking)]
+        public struct TYPEDESCRIPTOR
+        {
+            public BlittableBoolean expanded;
+            public BlittableBoolean reverse;
+            public IntPtr name; // const char*
+            public nuint addr;
+            public nuint offset;
+            public int id;
+            public int size;
+            public IntPtr callback; // TYPETOSTRING function pointer
+            public IntPtr userdata; // void*
+        }
+
+
+        #region Core Bridge Functions
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr BridgeInit(); // Returns const wchar_t* error string or null
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr BridgeStart(); // Returns const wchar_t* error string or null
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr BridgeAlloc(nuint size);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void BridgeFree(IntPtr ptr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool BridgeSettingGet([MarshalAs(UnmanagedType.LPUTF8Str)] string section, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, IntPtr value);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool BridgeSettingGetUint([MarshalAs(UnmanagedType.LPUTF8Str)] string section, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, ref nuint value);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool BridgeSettingSet([MarshalAs(UnmanagedType.LPUTF8Str)] string section, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool BridgeSettingSetUint([MarshalAs(UnmanagedType.LPUTF8Str)] string section, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, nuint value);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool BridgeSettingFlush();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool BridgeSettingRead(ref int errorLine);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int BridgeGetDbgVersion();
+
+        #endregion
+
+        #region Remaining Debugger (Dbg) Subsystem Functions
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr DbgInit(); // Returns const char*
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgExit();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgMemGetPageSize(nuint baseAddr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgIsValidExpression([MarshalAs(UnmanagedType.LPUTF8Str)] string expression);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgIsJumpGoingToExecute(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgGetBookmarkAt(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgSetBookmarkAt(nuint addr, bool isbookmark);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern uint DbgGetBpxTypeAt(nuint addr); // Returns BPXTYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgGetRegDump(IntPtr regdump); // ref REGDUMP structure
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgMemIsValidReadPtr(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgGetBpList(uint type, IntPtr list); // Passing BPMAP structure pointer
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgGetFunctionTypeAt(nuint addr); // Returns FUNCTYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgGetLoopTypeAt(nuint addr, int depth); // Returns LOOPTYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgScriptLoad([MarshalAs(UnmanagedType.LPUTF8Str)] string filename);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgScriptUnload();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgScriptRun(int destline);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgScriptStep();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgScriptBpToggle(int line);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgScriptBpGet(int line);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgScriptCmdExec([MarshalAs(UnmanagedType.LPUTF8Str)] string command);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgScriptAbort();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgScriptGetLineType(int line); // Returns SCRIPTLINETYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgScriptSetIp(int line);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgScriptGetBranchInfo(int line, ref SCRIPTBRANCH info);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgSymbolEnum(nuint baseAddr, IntPtr cbSymbolEnum, IntPtr user);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgSymbolEnumFromCache(nuint baseAddr, IntPtr cbSymbolEnum, IntPtr user);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgAssembleAt(nuint addr, [MarshalAs(UnmanagedType.LPUTF8Str)] string instruction);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgStackCommentGet(nuint addr, IntPtr comment); // ref STACK_COMMENT structure
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgSettingsUpdated();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgMenuEntryClicked(int hEntry);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgFunctionGet(nuint addr, out nuint start, out nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgFunctionOverlaps(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgFunctionAdd(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgFunctionDel(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgArgumentGet(nuint addr, out nuint start, out nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgArgumentOverlaps(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgArgumentAdd(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgArgumentDel(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgLoopOverlaps(int depth, nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgXrefAdd(nuint addr, nuint from);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgXrefDelAll(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgGetXrefCountAt(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgGetXrefTypeAt(nuint addr); // Returns XREFTYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgIsBpDisabled(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgSetAutoBookmarkAt(nuint addr);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgClearAutoBookmarkRange(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgSetAutoFunctionAt(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgClearAutoFunctionRange(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgGetStringAt(nuint addr, IntPtr text);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr DbgFunctions(); // Returns const DBGFUNCTIONS*
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgWinEvent(IntPtr message, ref nint result); // MSG* pointer
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgWinEventGlobal(IntPtr message); // MSG* pointer
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgGetTimeWastedCounter();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgGetArgTypeAt(nuint addr); // Returns ARGTYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr DbgGetEncodeTypeBuffer(nuint addr, out nuint size);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgReleaseEncodeTypeBuffer(IntPtr buffer);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern int DbgGetEncodeTypeAt(nuint addr, nuint size); // Returns ENCODETYPE enum value
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgGetEncodeSizeAt(nuint addr, nuint codesize);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgSetEncodeType(nuint addr, nuint size, int type); // ENCODETYPE enum integer
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgDelEncodeTypeRange(nuint start, nuint end);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgDelEncodeTypeSegment(nuint start);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgGetWatchList(IntPtr list); // ListOf macro object pointer
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgSelChanged(int hWindow, nuint VA);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr DbgGetProcessHandle();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern IntPtr DbgGetThreadHandle();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern uint DbgGetProcessId();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern uint DbgGetThreadId();
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgGetPebAddress(uint ProcessId);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgGetTebAddress(uint ThreadId);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern bool DbgAnalyzeFunction(nuint entry, IntPtr graph); // BridgeCFGraphList*
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern nuint DbgEval([MarshalAs(UnmanagedType.LPUTF8Str)] string expression, ref bool success);
+
+        [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]
+        public static extern void DbgMenuPrepare(int hMenu);
+
+        #endregion
+
+        
+
+
+
+
+
+
+
     }
 }

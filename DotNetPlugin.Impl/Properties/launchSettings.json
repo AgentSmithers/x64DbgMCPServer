@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "DotNetPlugin.Impl": {
+      "commandName": "Project"
+    },
+    "DebugX64OnDesktop": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Users\\User\\Desktop\\x96\\x64\\x64dbg.exe",
+      "commandLineArgs": "\"C:\\Users\\User\\Desktop\\pstwalker731.portable\\pstwalker.exe\""
+    }
+  }
+}

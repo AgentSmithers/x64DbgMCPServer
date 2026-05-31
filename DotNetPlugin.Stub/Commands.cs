@@ -7,6 +7,29 @@ using DotNetPlugin.NativeBindings.SDK;
 
 namespace DotNetPlugin
 {
+
+    public enum CommandCategory
+    {
+        GeneralPurpose,
+        DebugControl,
+        BreakpointControl,
+        ConditionalBreakpointControl,
+        Tracing,
+        ThreadControl,
+        MemoryOperations,
+        OperatingSystemControl,
+        WatchControl,
+        Variables,
+        Searching,
+        UserDatabase,
+        Analysis,
+        Types,
+        Plugins,
+        ScriptCommands,
+        GUI,
+        Miscellaneous,
+        DebugFunctions
+    }
     /// <summary>
     /// Attribute for automatically registering commands in x64Dbg.
     /// </summary>
@@ -14,6 +37,8 @@ namespace DotNetPlugin
     public class CommandAttribute : Attribute
     {
         public string Name { get; }
+        public CommandCategory Category { get; set; } = CommandCategory.GeneralPurpose;
+
         public bool DebugOnly { get; set; } //Command is only visual during an active debug session of a binary.
         public bool MCPOnly { get; set; } //Used so it is not registered as an X64Dbg Command
         public bool X64DbgOnly { get; set; } //Used so it is not registerd with MCP
@@ -65,8 +90,14 @@ namespace DotNetPlugin
                     continue; //Use only for MCPServer remote invokation
                 }
 
-                var reportsSuccess = method.ReturnType == typeof(bool);
-                if (!reportsSuccess && method.ReturnType != typeof(void))
+                var returnType = method.ReturnType;
+                var reportsSuccess = returnType == typeof(bool) || returnType.FullName == typeof(bool).FullName;
+
+                // Check against string and void using FullName to bypass context boundary issues
+                bool isVoid = returnType == typeof(void) || returnType.FullName == typeof(void).FullName;
+                bool isString = returnType == typeof(string) || returnType.FullName == typeof(string).FullName;
+
+                if (!reportsSuccess && !isVoid && !isString)
                 {
                     PluginBase.LogError($"Registration of command '{name}' is skipped. Method '{method.Name}' has an invalid return type.");
                     continue;

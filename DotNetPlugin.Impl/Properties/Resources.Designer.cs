@@ -71,16 +71,6 @@ namespace DotNetPlugin.Properties {
         }
         
         /// <summary>
-        ///   Looks up a localized resource of type System.Drawing.Bitmap.
-        /// </summary>
-        internal static System.Drawing.Bitmap MainIcon {
-            get {
-                object obj = ResourceManager.GetObject("MainIcon", resourceCulture);
-                return ((System.Drawing.Bitmap)(obj));
-            }
-        }
-        
-        /// <summary>
         ///   Looks up a localized string similar to Debugger Command Help Manual
         ///
         ///InitDebug
@@ -160,6 +150,16 @@ namespace DotNetPlugin.Properties {
         internal static string GUIJSON {
             get {
                 return ResourceManager.GetString("GUIJSON", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Drawing.Bitmap.
+        /// </summary>
+        internal static System.Drawing.Bitmap MainIcon {
+            get {
+                object obj = ResourceManager.GetObject("MainIcon", resourceCulture);
+                return ((System.Drawing.Bitmap)(obj));
             }
         }
         

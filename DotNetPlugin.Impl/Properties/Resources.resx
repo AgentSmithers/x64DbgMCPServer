@@ -989,7 +989,7 @@ ExecuteDebuggerCommand command = "findall 0x00401000 558BEC"
 ExecuteDebuggerCommand command = "findall MyFuncStart 90 0x100"
 
 findallmem
-ExecuteDebuggerCommand command = findallmem start_address pattern [size] [region]
+findallmem start_address pattern [size] [region]
 [integer]start_address = The address to start searching from.
 [string]pattern = The byte pattern to search for, which can include wildcards (e.g., 'EB0?90??8D').
 [optional integer]size = The size of the data to search in. Defaults to the entire memory map (-1).
@@ -997,8 +997,8 @@ ExecuteDebuggerCommand command = findallmem start_address pattern [size] [region
 Description: Find all occurrences of a pattern in the entire memory map. Aliases: findmemall.
 Result: $result (integer) = The number of occurrences found.
 Example:
-ExecuteDebuggerCommand command = "findallmem 0, 540065006e00" // Searching for the Unicode string "Ten" from the start of the application
-ExecuteDebuggerCommand command = "findmemall 0x00400000, C3909090, -1, user"
+"findallmem 0, 540065006e00" // Searching for the Unicode string "Ten" from the start of the application
+"findmemall 0x00400000, C3909090, -1, user"
 
 findasm
 ExecuteDebuggerCommand command = findasm instruction [address] [size]

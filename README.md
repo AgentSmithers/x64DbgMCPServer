@@ -1,5 +1,7 @@
 #As of 5/26/26 a new MCP streamable library has been released. During my testing I have found that some of the interoptability and compatibility has been impacted which I am working diligently on revamping the logic to work with both the former and streamable MCP deployments. I expect to have an update this coming week for version 1.5. Stay tuned.
 
+Unless you directly require x64 streamable HTTP MCP server use ver 1.3
+
 # X64Dbg MCP Server (plugin)
 This project is a starting point for building an MCP (Model Context Protocol) server plugin for x96/x64/x32dbg https://github.com/x64dbg/x64dbg/ using C# on the classic Windows-only .NET Framework platform (No ASP.NET Core hosting required).
 

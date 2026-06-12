@@ -88,7 +88,11 @@ namespace DotNetPlugin
         static SimpleMcpServer GSimpleMcpServer;
         static McpServerConfig GMcpServerConfig;
 
-        [Command("StartMCPServer", DebugOnly = false, Category = CommandCategory.GeneralPurpose)]
+        // Server lifecycle is driven from the x64dbg command line only; it is
+        // intentionally NOT exposed over MCP (X64DbgOnly) — an agent must not
+        // be able to start or stop the transport it is connected through.
+        // Keeps the string[] signature required by x64dbg command registration.
+        [Command("StartMCPServer", DebugOnly = false, X64DbgOnly = true, Category = CommandCategory.GeneralPurpose)]
         public static void cbStartMCPServer(string[] args)
         {
             Console.WriteLine("Starting MCPServer");
@@ -99,7 +103,7 @@ namespace DotNetPlugin
             Console.WriteLine($"MCP Server URL: {GMcpServerConfig.GetDisplayUrl()}");
         }
 
-        [Command("StopMCPServer", DebugOnly = false, Category = CommandCategory.GeneralPurpose)]
+        [Command("StopMCPServer", DebugOnly = false, X64DbgOnly = true, Category = CommandCategory.GeneralPurpose)]
         public static void cbStopMCPServer(string[] args)
         {
             Console.WriteLine("Stopping MCPServer");
@@ -161,14 +165,14 @@ namespace DotNetPlugin
             try
             {
                 Console.WriteLine("Executing bplist with architecture-specific safety checks...");
-                
+
                 // Check if debugger is in a valid state
                 if (!Bridge.DbgIsDebugging())
                 {
                     Console.WriteLine("Debugger is not actively debugging, skipping bplist");
                     return false;
                 }
-                
+
                 // Try to get process ID first to ensure we have a valid process
                 var pid = Bridge.DbgValFromString("$pid");
                 if (pid == 0)
@@ -176,11 +180,11 @@ namespace DotNetPlugin
                     Console.WriteLine("No valid process ID, skipping bplist");
                     return false;
                 }
-                
+
                 // Detect architecture at runtime
                 bool isX64 = IsRunningInX64Dbg();
                 Console.WriteLine($"Detected architecture: {(isX64 ? "x64dbg" : "x32dbg")}, Process ID: {pid}");
-                
+
                 if (isX64)
                 {
                     // x64dbg - use direct bplist (usually works fine)
@@ -204,11 +208,19 @@ namespace DotNetPlugin
         }
 
         [Command("SearchForStrings", DebugOnly = false, MCPOnly = true, Category = CommandCategory.Searching,
-MCPCmdDescription = "Searches memory for a specific text string.\n" +
-                    "encodingType: Must be exactly 'ascii' or 'utf16'.\n" +
-                    "startAddress: (Optional) Start address. Defaults to '0'.")]
+MCPCmdDescription = "Searches process memory for a specific text string and returns the addresses where it occurs.")]
         // Notice how we define exact parameter names here instead of an array!
-        public static string ExecuteSearchForStrings(string searchText, string encodingType, string startAddress = "0")
+        public static string ExecuteSearchForStrings(
+            [McpParam("The literal text to search for in the target process memory.",
+                Examples = new[] { "Invalid License", "kernel32.dll" })]
+            string searchText,
+            [McpParam("Character encoding of the search string.",
+                EnumValues = new[] { "ascii", "utf16" })]
+            string encodingType,
+            [McpParam("Hex address to begin the search from. Defaults to '0' to scan from the lowest mapped address.",
+                Pattern = McpParamAttribute.HexAddressPattern, Required = false,
+                Examples = new[] { "0", "0x7FF6B2000000" })]
+            string startAddress = "0")
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(ExecuteSearchForStrings)}");
@@ -261,12 +273,21 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
         [Command("FindAllMem", DebugOnly = false, MCPOnly = true, Category = CommandCategory.Searching,
- MCPCmdDescription = "Searches memory for a specific hex byte pattern.\n" +
-                     "startAddress: Address to start searching from (e.g., '0x7FF6B2000000').\n" +
-                     "bytePattern: Byte pattern with optional wildcards. (e.g., 'EB0?90??8D'). Spaces are safely stripped.\n" +
-                     "searchSize: (Optional) Size of data to search. Default is entire map '-1'.\n" +
-                     "moduleFilter: (Optional) Set to 'user', 'system', or 'module' to filter.")]
-        public static string ExecuteFindAllMem(string startAddress, string bytePattern, string searchSize = "-1", string moduleFilter = "")
+ MCPCmdDescription = "Searches memory for a specific hex byte pattern (supports wildcards) and returns matching addresses.")]
+        public static string ExecuteFindAllMem(
+            [McpParam("Hex address to start searching from.",
+                Pattern = McpParamAttribute.HexAddressPattern,
+                Examples = new[] { "0x7FF6B2000000" })]
+            string startAddress,
+            [McpParam("Byte pattern in hex. Use '?' as a nibble/byte wildcard. Spaces are stripped automatically.",
+                Examples = new[] { "EB0?90??8D", "48 8B 05" })]
+            string bytePattern,
+            [McpParam("Number of bytes to search. Use '-1' to search the entire memory map.",
+                Required = false, Examples = new[] { "-1", "0x1000" })]
+            string searchSize = "-1",
+            [McpParam("Optional region filter.", Required = false,
+                EnumValues = new[] { "user", "system", "module" })]
+            string moduleFilter = "")
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(ExecuteFindAllMem)}");
@@ -344,7 +365,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                     Console.WriteLine("Detected x64dbg via RIP register");
                     return true;
                 }
-                
+
                 // Method 2: Check process architecture
                 var pid = Bridge.DbgValFromString("$pid");
                 if (pid != 0)
@@ -361,7 +382,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                         // Fallback method
                     }
                 }
-                
+
                 // Method 3: Check if x32-specific registers are available
                 var eip = Bridge.DbgValFromString("$eip");
                 if (eip != 0)
@@ -369,7 +390,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                     Console.WriteLine("Detected x32dbg via EIP register");
                     return false;
                 }
-                
+
                 // Default fallback - assume x32 if we can't determine
                 Console.WriteLine("Could not determine architecture, defaulting to x32dbg");
                 return false;
@@ -387,25 +408,25 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
             {
                 // For x32dbg, use a safer approach with log redirection
                 // This avoids the direct crash that can happen with bplist
-                
+
                 string tempFile = null;
                 try
                 {
                     tempFile = Path.Combine(Path.GetTempPath(), "x32dbg_bplist_" + Guid.NewGuid().ToString("N") + ".log");
-                    
+
                     // Start log redirection
                     DbgCmdExec($"LogRedirect \"{tempFile}\"");
                     Thread.Sleep(100);
-                    
+
                     // Try bplist with a delay (safer for x32dbg)
                     Console.WriteLine("Executing bplist with safety delay for x32dbg...");
                     DbgCmdExec("bplist");
                     Thread.Sleep(300);
-                    
+
                     // Stop redirection
                     DbgCmdExec("LogRedirectStop");
                     Thread.Sleep(100);
-                    
+
                     // Read the log file
                     if (File.Exists(tempFile))
                     {
@@ -413,7 +434,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                         Console.WriteLine($"Breakpoint log content: {content}");
                         return !string.IsNullOrEmpty(content);
                     }
-                    
+
                     return false;
                 }
                 finally
@@ -467,8 +488,11 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
         */
         [Command("SetBreakpoint", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions,
-    MCPCmdDescription = "Sets a software execution breakpoint (INT3).\ntarget: The hex address (e.g., '0x140001000') or API symbol. For Windows APIs, include the module name (e.g., 'user32:MessageBoxW').")]
-        public static string ExecuteSetBreakpoint(string target)
+    MCPCmdDescription = "Sets a software execution breakpoint (INT3) at an address or API symbol.")]
+        public static string ExecuteSetBreakpoint(
+            [McpParam("Hex address or API symbol to break on. For Windows APIs, include the module prefix.",
+                Examples = new[] { "0x140001000", "user32:MessageBoxW", "kernel32:CreateFileW" })]
+            string target)
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(ExecuteSetBreakpoint)}");
@@ -504,7 +528,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                 return $"Exception occurred while setting breakpoint: {e.Message}";
             }
         }
-        
+
         //[Command("DbgCmdExec", DebugOnly = false, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Executes a native x64dbg command. WARNING: Use x64dbg syntax, NOT WinDbg syntax (e.g., use 'bp MessageBoxW' or 'bp user32:MessageBoxW', do NOT use '!').\\nExamples:\\n- 'run' (continue execution)\\n- 'step' (step into)\\n- 'bp GetDlgItemTextW' (set breakpoint)\\n- 'bc *' (clear all breakpoints)\\n- 'analx' (analyze executable)\"). Execute the command on the command processing thread.\r\n\r\nbool DbgCmdExec(const char* cmd);\r\nParameters\r\ncmd The command string in UTF-8 encoding\r\n\r\nReturn Value\r\ntrue if the command is sent to the command processing thread for asynchronous execution, false otherwise.\r\n\r\nExample\r\nDbgCmdExec(\"run\");")]
         public static string DbgCmdExecFunction(string command, int settleDelayMs = 200)
         {
@@ -572,8 +596,8 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                 try { if (!string.IsNullOrEmpty(tempFile) && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
             }
         }
-        
-        [Command("GetBreakpointInfo", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Get breakpoint information using alternative methods. Example: GetBreakpointInfo")]
+
+        [Command("GetBreakpointInfo", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Returns information about all currently set breakpoints, including the total count and list. Takes no arguments.")]
         public static string GetBreakpointInfo()
         {
             Console.WriteLine("----------------------------------------");
@@ -582,16 +606,16 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
             try
             {
                 Console.WriteLine("Getting breakpoint information using alternative methods...");
-                
+
                 if (!Bridge.DbgIsDebugging())
                 {
                     return "Debugger is not actively debugging";
                 }
-                
+
                 var output = new StringBuilder();
                 output.AppendLine("Breakpoint Information:");
                 output.AppendLine("======================");
-                
+
                 // Try to get breakpoint count using debugger variables
                 try
                 {
@@ -602,7 +626,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                 {
                     output.AppendLine($"Could not get breakpoint count: {ex.Message}");
                 }
-                
+
                 // Try to get breakpoint list using a different approach
                 try
                 {
@@ -622,7 +646,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                 {
                     output.AppendLine($"Error getting breakpoint list: {ex.Message}");
                 }
-                
+
                 return output.ToString();
             }
             catch (Exception ex)
@@ -632,8 +656,12 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
 
-        [Command("ListCommandsByCategory", DebugOnly = false, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "List available MCP commands by category. Example: ListCommandsByCategory category=Searching")]
-        public static string ListCommandsByCategory(string category = "")
+        [Command("ListCommandsByCategory", DebugOnly = false, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Lists the available MCP tools, optionally filtered to a single category. Call with no category to list the available categories first.")]
+        public static string ListCommandsByCategory(
+            [McpParam("Category to list commands for. Omit to list all available categories.",
+                Required = false,
+                Examples = new[] { "Searching", "DebugControl", "DebugFunctions" })]
+            string category = "")
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(ListCommandsByCategory)}");
@@ -761,8 +789,15 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         */
 
         [Command("refstr", DebugOnly = true, MCPOnly = true, Category = CommandCategory.Searching,
-    MCPCmdDescription = "Finds referenced text strings in a memory region.\naddress: (Optional) Start address to search (defaults to CIP).\nsize: (Optional) Size of data to search (e.g., '0x1000').")]
-        public static string ExecuteRefStr(string address = "", string size = "")
+    MCPCmdDescription = "Finds referenced text strings within a memory region and returns the instruction addresses that reference them.")]
+        public static string ExecuteRefStr(
+            [McpParam("Hex start address to search from. Defaults to the current instruction pointer (CIP) when omitted.",
+                Pattern = McpParamAttribute.HexAddressPattern, Required = false,
+                Examples = new[] { "0x140001000" })]
+            string address = "",
+            [McpParam("Size of the memory region to scan (hex). Only applied when an address is also supplied.",
+                Required = false, Examples = new[] { "0x1000" })]
+            string size = "")
         {
 
             Console.WriteLine("----------------------------------------");
@@ -830,8 +865,12 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
         [Command("FindXrefs", DebugOnly = true, MCPOnly = true, Category = CommandCategory.Searching,
-    MCPCmdDescription = "Finds cross-references (xrefs) TO a specific memory address (e.g., where a string or function is called from).\ntargetAddress: The hex address to find references to (e.g., '0x140001000').")]
-        public static string ExecuteFindXrefs(string targetAddress)
+    MCPCmdDescription = "Finds cross-references (xrefs) pointing TO a specific address, e.g. every location that calls a function or references a string. Returns each referencing address with its disassembly.")]
+        public static string ExecuteFindXrefs(
+            [McpParam("Hex address to find references to.",
+                Pattern = McpParamAttribute.HexAddressPattern,
+                Examples = new[] { "0x140001000" })]
+            string targetAddress)
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(ExecuteFindXrefs)}");
@@ -1086,8 +1125,15 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         //    return success;
         //}
 
-        [Command("WriteMemToAddress", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: WriteMemToAddress address=0x12345678, byteString=0F FF 90")]
-        public static string WriteMemToAddress(string address, string byteString)
+        [Command("WriteMemToAddress", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Patches memory by writing raw hex bytes to an address. WARNING: this modifies the live process. Example: WriteMemToAddress address=0x12345678, byteString=0F FF 90")]
+        public static string WriteMemToAddress(
+            [McpParam("Hex address to write the bytes to.",
+                Pattern = McpParamAttribute.HexAddressPattern,
+                Examples = new[] { "0x12345678" })]
+            string address,
+            [McpParam("Space- or comma-separated hex bytes to write, in order.",
+                Examples = new[] { "0F FF 90", "90 90 90" })]
+            string byteString)
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(WriteMemToAddress)}");
@@ -1135,8 +1181,18 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
             }
         }
 
-        [Command("CommentOrLabelAtAddress", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: CommentOrLabelAtAddress address=0x12345678, value=LabelTextGoeshere, mode=Label\r\nExample: CommentOrLabelAtAddress address=0x12345678, value=LabelTextGoeshere, mode=Comment\r\n")]
-        public static string CommentOrLabelAtAddress(string address, string value, string mode = "Label")
+        [Command("CommentOrLabelAtAddress", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Adds a comment or a label at a specific address in the disassembly. Example: CommentOrLabelAtAddress address=0x12345678, value=DecryptRoutine, mode=Label")]
+        public static string CommentOrLabelAtAddress(
+            [McpParam("Hex address to annotate.",
+                Pattern = McpParamAttribute.HexAddressPattern,
+                Examples = new[] { "0x12345678" })]
+            string address,
+            [McpParam("The label or comment text to apply at the address.",
+                Examples = new[] { "DecryptRoutine", "checks license flag" })]
+            string value,
+            [McpParam("Whether to write a renamable label or an inline comment.",
+                Required = false, EnumValues = new[] { "Label", "Comment" })]
+            string mode = "Label")
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(CommentOrLabelAtAddress)}");
@@ -1264,8 +1320,12 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         //    }
         //}
 
-        [Command("GetLabel", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Example: GetLabel addressStr=0x12345678")]
-        public static string GetLabel(string addressStr)
+        [Command("GetLabel", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugFunctions, MCPCmdDescription = "Returns the label (symbol name) currently assigned to an address, if any. Example: GetLabel addressStr=0x12345678")]
+        public static string GetLabel(
+            [McpParam("Hex (or decimal) address to look up the label for.",
+                Pattern = McpParamAttribute.HexAddressPattern,
+                Examples = new[] { "0x12345678" })]
+            string addressStr)
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(GetLabel)}");
@@ -1346,7 +1406,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
                 // Disassemble at the given address
                 Bridge.BASIC_INSTRUCTION_INFO disasm = new Bridge.BASIC_INSTRUCTION_INFO();
                 Bridge.DbgDisasmFastAt(address, ref disasm);
-              
+
 
                 LabelIfCallTargetMatches(address, ref disasm, targetAddress, value, mode);
             }
@@ -1495,7 +1555,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
 
-       
+
 
         public static void LabelMatchingBytes(nuint address, byte[] pattern, string value = "test", string mode = "Label")
         {
@@ -1655,7 +1715,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
 
-        [Command("GetAllModulesFromMemMap", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: GetAllModulesFromMemMap")]
+        [Command("GetAllModulesFromMemMap", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Lists every image module currently mapped into the target process, with name, path, base address, end address, and size. Takes no arguments.")]
         public static string GetAllModulesFromMemMap()
         {
             Console.WriteLine("GetAllModulesFromMemMap() called");
@@ -1771,7 +1831,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
         [Command("run", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
-    MCPCmdDescription = "Resumes the execution of the debugged process (equivalent to pressing F9 or typing 'run').")]
+    MCPCmdDescription = "Resumes execution of the debugged process (equivalent to F9 / 'run'). Returns whether the process is now running or has paused at a breakpoint. Takes no arguments.")]
         public static string ContinueExecution()
         {
             Console.WriteLine("----------------------------------------");
@@ -1811,7 +1871,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
         [Command("StepInto", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
-            MCPCmdDescription = "Executes a single instruction, stepping INTO any call instructions encountered (F7).")]
+            MCPCmdDescription = "Executes a single instruction, stepping INTO any call encountered (F7). Takes no arguments.")]
         public static string StepInto()
         {
             Console.WriteLine("----------------------------------------");
@@ -1836,7 +1896,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
         [Command("StepOver", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
-            MCPCmdDescription = "Executes a single instruction, stepping OVER subroutines/calls entirely (F8).")]
+            MCPCmdDescription = "Executes a single instruction, stepping OVER any call/subroutine entirely (F8). Takes no arguments.")]
         public static string StepOver()
         {
             Console.WriteLine("----------------------------------------");
@@ -1861,7 +1921,7 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
         }
 
         [Command("StepOut", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
-            MCPCmdDescription = "Executes until the current function block encounters its return boundary (Ctrl+F9).")]
+            MCPCmdDescription = "Runs until the current function returns to its caller (Ctrl+F9). Takes no arguments.")]
         public static string StepOut()
         {
             Console.WriteLine("----------------------------------------");
@@ -1887,11 +1947,11 @@ MCPCmdDescription = "Searches memory for a specific text string.\n" +
 
 
         [Command("GetCallStack", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose,
-MCPCmdDescription = "Retrieves the current execution call stack thread frame history (via RBP frame walking).\n" +
-                    "Use this immediately after a breakpoint hits to trace back to " +
-                    "to locate the exact module address/function that originally called it.\n" +
-                    "maxFrames: (Optional) Maximum number of frames to traverse. Defaults to 32.")]
-        public static string GetCallStack(int maxFrames = 32)
+MCPCmdDescription = "Retrieves the current execution call stack by walking RBP frames. Use immediately after a breakpoint hits to trace which module/function originally called the current code. Requires execution to be paused.")]
+        public static string GetCallStack(
+            [McpParam("Maximum number of stack frames to walk before stopping. Defaults to 32.",
+                Required = false, Minimum = 1, Maximum = 256, Examples = new[] { "32" })]
+            int maxFrames = 32)
         {
             try
             {
@@ -2194,7 +2254,7 @@ MCPCmdDescription = "Retrieves the current execution call stack thread frame his
         //    return callstack;
         //}
 
-        [Command("GetAllActiveThreads", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: GetAllActiveThreads")]
+        [Command("GetAllActiveThreads", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Lists all active threads in the target process with thread number, thread ID, entry point, TEB, and thread name. Takes no arguments.")]
         public static string GetAllActiveThreads()
         {
             Console.WriteLine("----------------------------------------");
@@ -2304,7 +2364,7 @@ MCPCmdDescription = "Retrieves the current execution call stack thread frame his
 
 
 
-        [Command("GetAllRegisters", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Example: GetAllRegisters")]
+        [Command("GetAllRegisters", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Returns the current values of all general-purpose registers (RAX–R15, RIP). Takes no arguments.")]
         public static string GetAllRegistersAsStrings()
         {
             Console.WriteLine("----------------------------------------");
@@ -2338,8 +2398,15 @@ MCPCmdDescription = "Retrieves the current execution call stack thread frame his
         }
 
 
-        [Command("ReadDismAtAddress", DebugOnly = true, Category = CommandCategory.DebugFunctions, MCPOnly = true, MCPCmdDescription = "Example: ReadDismAtAddress address=0x12345678, byteCount=100")]
-        public static string ReadDismAtAddress(string address, int byteCount)
+        [Command("ReadDismAtAddress", DebugOnly = true, Category = CommandCategory.DebugFunctions, MCPOnly = true, MCPCmdDescription = "Disassembles instructions starting at an address and returns the listing (with bytes, labels, and any dereferenced strings) until the byte budget is reached. Example: ReadDismAtAddress address=0x12345678, byteCount=100")]
+        public static string ReadDismAtAddress(
+            [McpParam("Hex address to begin disassembling from.",
+                Pattern = McpParamAttribute.HexAddressPattern,
+                Examples = new[] { "0x12345678" })]
+            string address,
+            [McpParam("Number of bytes of code to disassemble starting at the address.",
+                Minimum = 1, Examples = new[] { "100" })]
+            int byteCount)
         {
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(ReadDismAtAddress)}");
@@ -2433,10 +2500,13 @@ MCPCmdDescription = "Retrieves the current execution call stack thread frame his
 
 
 
-        [Command("DumpModuleToFile", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Example: DumpModuleToFile pfilepath=C:\\Output.txt")]
-        public static void DumpModuleToFile(string[] pfilepath)
+        [Command("DumpModuleToFile", DebugOnly = true, MCPOnly = true, MCPCmdDescription = "Dumps the current module's register state and full disassembly (with labels and dereferenced strings) to a text file on disk. Example: DumpModuleToFile pfilepath=C:\\Output.txt")]
+        public static void DumpModuleToFile(
+            [McpParam("Absolute path of the output text file to write the dump to.",
+                Examples = new[] { "C:\\Output.txt", "C:\\dump.txt" })]
+            string pfilepath)
         {
-            string filePath = pfilepath[0];//@"C:\dump.txt"; // Hardcoded file path as requested
+            string filePath = pfilepath;//@"C:\dump.txt"; // Hardcoded file path as requested
             Console.WriteLine($"DumpModuleToFile: Attempting to dump module info to: {filePath}");
 
             try

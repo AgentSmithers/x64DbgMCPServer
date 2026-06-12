@@ -18,45 +18,12 @@ using System.Web.Script.Serialization;
 
 namespace DotNetPlugin
 {
-    #region McpParamAttribute
-
-    /// <summary>
-    /// Optional attribute for describing MCP tool parameters in the
-    /// <c>tools/list</c> JSON schema. May be applied directly to the
-    /// parameter (description only) or to the method (name + description)
-    /// when the parameter itself cannot be annotated.
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Parameter | AttributeTargets.Method,
-                    AllowMultiple = true, Inherited = true)]
-    public sealed class McpParamAttribute : Attribute
-    {
-        /// <summary>Parameter name (only required for method-level usage).</summary>
-        public string Name { get; }
-
-        /// <summary>Human-readable description shown to the MCP client.</summary>
-        public string Description { get; }
-
-        /// <summary>Optional JSON-schema type override (e.g. "string","integer").</summary>
-        public string Type { get; set; }
-
-        /// <summary>Whether this parameter must be supplied. Defaults to true.</summary>
-        public bool Required { get; set; } = true;
-
-        /// <summary>Parameter-level constructor (description only).</summary>
-        public McpParamAttribute(string description)
-        {
-            Description = description;
-        }
-
-        /// <summary>Method-level constructor (specifies which param it describes).</summary>
-        public McpParamAttribute(string name, string description)
-        {
-            Name = name;
-            Description = description;
-        }
-    }
-
-    #endregion
+  
+    // NOTE: McpParamAttribute, CommandAttribute, CommandTargets and
+    // McpSchemaBuilder now live in McpAttributes.cs. The legacy
+    // CommandAttribute definition in Commands.cs must be DELETED — the
+    // [Obsolete] MCPOnly / X64DbgOnly / MCPCmdDescription shims on the new
+    // attribute keep Commands.Initialize and Plugin.cs compiling unchanged.
 
     #region McpSseSession
 
@@ -111,6 +78,10 @@ namespace DotNetPlugin
     /// modern Streamable HTTP transport (long-lived SSE) on a single endpoint.
     /// Mode is auto-detected per request from HTTP method, Accept header and
     /// the presence of the Mcp-Session-Id header.
+    ///
+    /// Tool definitions are built ONCE at construction via McpSchemaBuilder
+    /// and cached; tools/list filters the cache per request (DebugOnly), and
+    /// tools/call binds arguments against a precomputed parameter plan.
     /// </summary>
     public class SimpleMcpServer
     {
@@ -118,7 +89,7 @@ namespace DotNetPlugin
 
         private const string ProtocolVersion = "2025-11-25";
         private const string ServerName = "AgentSmithes x96Dbg";
-        private const string ServerVersion = "1.4";
+        private const string ServerVersion = "1.5";
         private const int HeartbeatIntervalMs = 15000;
 
         // Shared serializer — JavaScriptSerializer is thread-safe for
@@ -129,11 +100,77 @@ namespace DotNetPlugin
 
         #endregion
 
+        #region Tool cache types
+
+        /// <summary>
+        /// Per-parameter binding plan, resolved once at registration so that
+        /// tools/call never touches attribute reflection on the hot path.
+        /// </summary>
+        private sealed class ParamPlan
+        {
+            public ParameterInfo Info;
+            public McpParamAttribute Attr;     // may be null
+            public bool Hidden;                // excluded from schema, default injected
+            public bool Required;              // advertised in schema `required`
+        }
+
+        /// <summary>
+        /// Immutable, prebuilt MCP tool definition. InputSchema and
+        /// Annotations are serialized verbatim into tools/list.
+        /// </summary>
+        private sealed class McpToolDefinition
+        {
+            public string Name;
+            public string Description;
+            public bool DebugOnly;
+            public MethodInfo Method;
+            public ParamPlan[] Parameters;
+            public Dictionary<string, object> InputSchema;
+            public Dictionary<string, object> Annotations; // null => omit field
+        }
+
+        /// <summary>Static entry for the built-in Echo tool.</summary>
+        private static readonly Dictionary<string, object> EchoToolEntry =
+            new Dictionary<string, object>
+            {
+                ["name"] = "Echo",
+                ["description"] = "Echoes the input back to the client.",
+                ["inputSchema"] = new Dictionary<string, object>
+                {
+                    ["title"] = "Echo",
+                    ["description"] = "Echoes the input back to the client.",
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["message"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Message to echo."
+                        }
+                    },
+                    ["required"] = new[] { "message" }
+                },
+                ["annotations"] = new Dictionary<string, object>
+                {
+                    ["readOnlyHint"] = true,
+                    ["idempotentHint"] = true,
+                    ["openWorldHint"] = false
+                }
+            };
+
+        #endregion
+
         #region Fields
 
         private readonly HttpListener _listener = new HttpListener();
-        private readonly Dictionary<string, MethodInfo> _commands =
-            new Dictionary<string, MethodInfo>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Tool cache, keyed case-insensitively by tool name. Built once in
+        /// the constructor; read-only afterwards, so no locking is needed.
+        /// </summary>
+        private readonly Dictionary<string, McpToolDefinition> _tools =
+            new Dictionary<string, McpToolDefinition>(StringComparer.OrdinalIgnoreCase);
+
         private readonly ConcurrentDictionary<string, McpSseSession> _sessions =
             new ConcurrentDictionary<string, McpSseSession>();
 
@@ -204,20 +241,132 @@ namespace DotNetPlugin
             // under host:port. All routing is done inside HandleRequestAsync.
             _listener.Prefixes.Add("http://" + ip + ":" + port + "/");
 
-            RegisterCommands();
+            BuildToolCache();
         }
 
-        private void RegisterCommands()
+        /// <summary>
+        /// Reflects over the command source type ONCE, validates attribute
+        /// usage, and prebuilds every MCP tool definition (schema included).
+        /// Misconfigurations are reported here, at developer time — never to
+        /// the LLM at call time.
+        /// </summary>
+        private void BuildToolCache()
         {
             const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+
             foreach (var method in _targetType.GetMethods(flags))
             {
-                var attr = method.GetCustomAttribute<CommandAttribute>();
-                if (attr != null && !string.IsNullOrEmpty(attr.Name))
+                // AllowMultiple = true => each attribute is a separately named
+                // alias of the same method.
+                foreach (var attr in method.GetCustomAttributes<CommandAttribute>())
                 {
-                    _commands[attr.Name] = method;
+                    // Only surface commands targeted at MCP. The [Obsolete]
+                    // X64DbgOnly shim maps onto Targets, so legacy decorations
+                    // are honored without modification.
+                    if ((attr.Targets & CommandTargets.Mcp) == 0) continue;
+
+                    string name = !string.IsNullOrEmpty(attr.Name) ? attr.Name : method.Name;
+
+                    // Validate method-level [McpParam("name", ...)] targets so
+                    // a parameter rename fails fast instead of silently
+                    // orphaning its documentation.
+                    foreach (var err in McpSchemaBuilder.ValidateMethodLevelParamNames(method))
+                        Console.WriteLine("MCP registration warning: " + err);
+
+                    // Build the per-parameter binding plan.
+                    var plans = new List<ParamPlan>();
+                    bool invalid = false;
+
+                    foreach (var p in method.GetParameters())
+                    {
+                        var pAttr = McpSchemaBuilder.ResolveParamAttribute(method, p);
+                        bool hidden = pAttr != null && pAttr.Hidden;
+
+                        if (hidden && !p.IsOptional)
+                        {
+                            Console.WriteLine(
+                                "MCP registration ERROR: tool '" + name + "' parameter '" + p.Name +
+                                "' is Hidden but has no default value. Tool skipped.");
+                            invalid = true;
+                            break;
+                        }
+
+                        plans.Add(new ParamPlan
+                        {
+                            Info = p,
+                            Attr = pAttr,
+                            Hidden = hidden,
+                            Required = !hidden && McpSchemaBuilder.IsRequired(p, pAttr)
+                        });
+                    }
+
+                    if (invalid) continue;
+
+                    // Build the JSON Schema once. Hidden parameters are simply
+                    // absent — the LLM never learns they exist.
+                    var properties = new Dictionary<string, object>();
+                    var required = new List<string>();
+
+                    foreach (var plan in plans)
+                    {
+                        if (plan.Hidden) continue;
+                        properties[plan.Info.Name] =
+                            McpSchemaBuilder.BuildPropertySchema(method, plan.Info, plan.Attr);
+                        if (plan.Required) required.Add(plan.Info.Name);
+                    }
+
+                    string description = !string.IsNullOrEmpty(attr.Description)
+                                         ? attr.Description
+                                         : "Command: " + name;
+
+                    var definition = new McpToolDefinition
+                    {
+                        Name = name,
+                        Description = description,
+                        DebugOnly = attr.DebugOnly,
+                        Method = method,
+                        Parameters = plans.ToArray(),
+                        InputSchema = new Dictionary<string, object>
+                        {
+                            ["title"] = name,
+                            ["description"] = description,
+                            ["type"] = "object",
+                            ["properties"] = properties,
+                            ["required"] = required.ToArray()
+                        },
+                        Annotations = BuildAnnotations(attr)
+                    };
+
+                    if (_tools.ContainsKey(name))
+                    {
+                        Console.WriteLine(
+                            "MCP registration warning: duplicate tool name '" + name +
+                            "' — the later registration wins.");
+                    }
+                    _tools[name] = definition;
                 }
             }
+
+            Console.WriteLine("MCP tool cache built: " + _tools.Count + " tool(s) registered.");
+        }
+
+        /// <summary>
+        /// Emits an MCP ToolAnnotations object only when the developer
+        /// explicitly specified at least one hint (or a Title), so unspecified
+        /// tools inherit the MCP spec defaults rather than this serializer's.
+        /// </summary>
+        private static Dictionary<string, object> BuildAnnotations(CommandAttribute attr)
+        {
+            bool hasTitle = !string.IsNullOrEmpty(attr.Title);
+            if (!attr.AnyAnnotationSpecified && !hasTitle) return null;
+
+            var a = new Dictionary<string, object>();
+            if (hasTitle) a["title"] = attr.Title;
+            if (attr.ReadOnlyHintSpecified) a["readOnlyHint"] = attr.ReadOnlyHint;
+            if (attr.DestructiveHintSpecified) a["destructiveHint"] = attr.DestructiveHint;
+            if (attr.IdempotentHintSpecified) a["idempotentHint"] = attr.IdempotentHint;
+            if (attr.OpenWorldHintSpecified) a["openWorldHint"] = attr.OpenWorldHint;
+            return a.Count > 0 ? a : null;
         }
 
         #endregion
@@ -371,7 +520,6 @@ namespace DotNetPlugin
             // on the duration of any one request.
             if (_isRunning && _listener.IsListening) BeginAccept();
 
-            //Console.WriteLine("MCP (Streamable) incoming connection");
             // Process the request on a thread-pool task so the IO completion
             // callback returns immediately.
             _ = Task.Run(() => SafeHandle(ctx));
@@ -858,6 +1006,8 @@ namespace DotNetPlugin
                 protocolVersion = ProtocolVersion,
                 capabilities = new
                 {
+                    // listChanged stays true: the visible tool set genuinely
+                    // changes when a debug session starts/stops (DebugOnly).
                     tools = new { listChanged = true },
                     prompts = new { listChanged = true },
                     resources = new { listChanged = true, subscribe = false }
@@ -876,70 +1026,36 @@ namespace DotNetPlugin
 
         #region Handler: tools/list & tools/call
 
+        /// <summary>
+        /// tools/list is now a pure filter + serialize over the prebuilt
+        /// cache — no reflection, no schema construction per request.
+        /// </summary>
         private object HandleToolsList(object id)
         {
-            var toolsList = new List<object>();
             bool debuggerOn = Debugger.IsAttached
                               || (Bridge.DbgIsDebugging() && Bridge.DbgValFromString("$pid") > 0);
 
-            foreach (var kv in _commands)
+            var toolsList = new List<object>();
+
+            foreach (var def in _tools.Values)
             {
-                string commandName = kv.Key;
-                MethodInfo mi = kv.Value;
-                var attribute = mi.GetCustomAttribute<CommandAttribute>();
-                if (attribute == null) continue;
-
                 // DebugOnly commands hidden when no debugger session present.
-                if (attribute.DebugOnly && !debuggerOn) continue;
+                if (def.DebugOnly && !debuggerOn) continue;
 
-                var properties = new Dictionary<string, object>();
-                var required = new List<string>();
-                foreach (var p in mi.GetParameters())
+                var entry = new Dictionary<string, object>
                 {
-                    properties[p.Name] = new
-                    {
-                        type = GetJsonSchemaType(p.ParameterType),
-                        description = GetParameterDescription(mi, p)
-                    };
-                    if (!p.IsOptional) required.Add(p.Name);
-                }
+                    ["name"] = def.Name,
+                    ["description"] = def.Description,
+                    ["inputSchema"] = def.InputSchema
+                };
+                if (def.Annotations != null)
+                    entry["annotations"] = def.Annotations;
 
-                string description = !string.IsNullOrEmpty(attribute.MCPCmdDescription)
-                                     ? attribute.MCPCmdDescription
-                                     : ("Command: " + commandName);
-
-                toolsList.Add(new
-                {
-                    name = commandName,
-                    description = description,
-                    inputSchema = new
-                    {
-                        title = commandName,
-                        description = description,
-                        type = "object",
-                        properties = properties,
-                        required = required.ToArray()
-                    }
-                });
+                toolsList.Add(entry);
             }
 
             // Built-in Echo.
-            toolsList.Add(new
-            {
-                name = "Echo",
-                description = "Echoes the input back to the client.",
-                inputSchema = new
-                {
-                    title = "Echo",
-                    description = "Echoes the input back to the client.",
-                    type = "object",
-                    properties = new
-                    {
-                        message = new { type = "string", description = "Message to echo." }
-                    },
-                    required = new[] { "message" }
-                }
-            });
+            toolsList.Add(EchoToolEntry);
 
             return BuildResult(id, new { tools = toolsList.ToArray() });
         }
@@ -975,50 +1091,28 @@ namespace DotNetPlugin
                 return BuildResult(id, BuildToolContent("hello " + msg, isError: false));
             }
 
-            if (!_commands.TryGetValue(toolName, out var methodInfo))
+            if (!_tools.TryGetValue(toolName, out var tool))
             {
-                return BuildResult(id, BuildToolContent("Command '" + toolName + "' not found", isError: true));
+                return BuildResult(id, BuildToolContent(
+                    "Tool '" + toolName + "' not found. Call tools/list to see available tools.",
+                    isError: true));
+            }
+
+            // Call-time gate: a DebugOnly tool may have been listed during an
+            // active session that has since ended.
+            if (tool.DebugOnly && !Bridge.DbgIsDebugging())
+            {
+                return BuildResult(id, BuildToolContent(
+                    "Tool '" + tool.Name + "' requires an active debug session, but the debugger " +
+                    "is not currently debugging a target. Load/attach a target first.",
+                    isError: true));
             }
 
             try
             {
-                var parameters = methodInfo.GetParameters();
-                var invokeArgs = new object[parameters.Length];
-                for (int i = 0; i < parameters.Length; i++)
-                {
-                    var p = parameters[i];
-                    if (arguments.ContainsKey(p.Name))
-                    {
-                        try
-                        {
-                            invokeArgs[i] = ConvertArgument(arguments[p.Name], p.ParameterType, p.Name);
-                        }
-                        catch (Exception ex)
-                        {
-                            // Catch type mismatches (e.g., LLM sent a dict instead of a string array)
-                            string expectedType = p.ParameterType.Name;
-                            string receivedType = arguments[p.Name]?.GetType().Name ?? "null";
-                            throw new ArgumentException($"Type mismatch for parameter '{p.Name}'. Expected type '{expectedType}', but received '{receivedType}'. Inner error: {ex.Message}");
-                        }
-                    }
-                    else if (p.IsOptional)
-                    {
-                        invokeArgs[i] = p.DefaultValue;
-                    }
-                    else
-                    {
-                        // --- UPDATED ARGUMENT MISMATCH FEEDBACK ---
-                        // Extract the names of all parameters this C# method expects
-                        string expectedParams = string.Join(", ", parameters.Select(param => param.Name));
+                var invokeArgs = BindArguments(tool, arguments);
 
-                        // Extract the keys of all arguments the LLM actually sent
-                        string receivedParams = arguments.Count > 0 ? string.Join(", ", arguments.Keys) : "None";
-
-                        throw new ArgumentException($"Required parameter '{p.Name}' is missing.\nExpected parameters: [{expectedParams}]\nReceived arguments: [{receivedParams}]");
-                    }
-                }
-
-                var result = methodInfo.Invoke(null, invokeArgs);
+                var result = tool.Method.Invoke(null, invokeArgs);
                 string resultText = result != null
                                     ? result.ToString()
                                     : "Command executed successfully";
@@ -1029,84 +1123,103 @@ namespace DotNetPlugin
                 string msg = tie.InnerException != null ? tie.InnerException.Message : tie.Message;
                 return BuildResult(id, BuildToolContent("Error executing command: " + msg, isError: true));
             }
+            catch (ArgumentException ex)
+            {
+                // Binding/validation failures — the message is deliberately
+                // verbose self-correction signal for the LLM.
+                return BuildResult(id, BuildToolContent("Error executing command: " + ex.Message, isError: true));
+            }
             catch (Exception ex)
             {
-                // Both of our custom ArgumentExceptions will be caught here and sent back to the LLM
                 return BuildResult(id, BuildToolContent("Error executing command: " + ex.Message, isError: true));
             }
         }
-        private async Task<object> HandleToolsCallAsync_old(object id, Dictionary<string, object> request)
+
+        /// <summary>
+        /// Binds incoming JSON arguments to the method's parameters using the
+        /// precomputed plan. Throws ArgumentException with LLM-friendly,
+        /// self-correcting messages on any mismatch.
+        /// </summary>
+        private static object[] BindArguments(McpToolDefinition tool,
+                                              Dictionary<string, object> arguments)
         {
-            await Task.CompletedTask.ConfigureAwait(false); // keep handler async-shaped
+            var plans = tool.Parameters;
+            var invokeArgs = new object[plans.Length];
 
-            var paramsObj = request.ContainsKey("params") ? request["params"] as Dictionary<string, object> : null;
-            if (paramsObj == null)
+            for (int i = 0; i < plans.Length; i++)
             {
-                return BuildError(id, -32602, "Invalid params: missing 'params' object.");
-            }
+                var plan = plans[i];
+                var p = plan.Info;
 
-            string toolName = paramsObj.ContainsKey("name") ? Convert.ToString(paramsObj["name"]) : null;
-            var arguments = paramsObj.ContainsKey("arguments")
-                              ? paramsObj["arguments"] as Dictionary<string, object>
-                              : new Dictionary<string, object>();
-
-            if (string.IsNullOrEmpty(toolName))
-            {
-                return BuildError(id, -32602, "Invalid params: missing tool 'name'.");
-            }
-
-            arguments = arguments ?? new Dictionary<string, object>();
-
-            // Built-in Echo.
-            if (string.Equals(toolName, "Echo", StringComparison.OrdinalIgnoreCase))
-            {
-                string msg = arguments.ContainsKey("message")
-                             ? Convert.ToString(arguments["message"])
-                             : "";
-                return BuildResult(id, BuildToolContent("hello " + msg, isError: false));
-            }
-
-            if (!_commands.TryGetValue(toolName, out var methodInfo))
-            {
-                return BuildResult(id, BuildToolContent("Command '" + toolName + "' not found", isError: true));
-            }
-
-            try
-            {
-                var parameters = methodInfo.GetParameters();
-                var invokeArgs = new object[parameters.Length];
-                for (int i = 0; i < parameters.Length; i++)
+                // Hidden parameters never come from the wire — inject the
+                // signature default (validated optional at registration).
+                if (plan.Hidden)
                 {
-                    var p = parameters[i];
-                    if (arguments.ContainsKey(p.Name))
-                    {
-                        invokeArgs[i] = ConvertArgument(arguments[p.Name], p.ParameterType, p.Name);
-                    }
-                    else if (p.IsOptional)
-                    {
-                        invokeArgs[i] = p.DefaultValue;
-                    }
-                    else
-                    {
-                        throw new ArgumentException("Required parameter '" + p.Name + "' is missing");
-                    }
+                    invokeArgs[i] = p.DefaultValue;
+                    continue;
                 }
 
-                var result = methodInfo.Invoke(null, invokeArgs);
-                string resultText = result != null
-                                    ? result.ToString()
-                                    : "Command executed successfully";
-                return BuildResult(id, BuildToolContent(resultText, isError: false));
+                if (arguments.ContainsKey(p.Name))
+                {
+                    object raw = arguments[p.Name];
+
+                    // Enum-constrained values are validated up front so the
+                    // model gets the allowed set back instead of a downstream
+                    // parse failure.
+                    var enumValues = plan.Attr != null ? plan.Attr.EnumValues : null;
+                    if (enumValues != null && enumValues.Length > 0)
+                    {
+                        string candidate = Convert.ToString(raw, CultureInfo.InvariantCulture);
+                        bool ok = enumValues.Any(v =>
+                            string.Equals(v, candidate, StringComparison.OrdinalIgnoreCase));
+                        if (!ok)
+                        {
+                            throw new ArgumentException(
+                                "Invalid value '" + candidate + "' for parameter '" + p.Name +
+                                "'. Allowed values: [" + string.Join(", ", enumValues) + "].");
+                        }
+                    }
+
+                    try
+                    {
+                        invokeArgs[i] = ConvertArgument(raw, p.ParameterType, p.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Catch type mismatches (e.g., LLM sent a dict instead of a string array)
+                        string expectedType = p.ParameterType.Name;
+                        string receivedType = raw != null ? raw.GetType().Name : "null";
+                        throw new ArgumentException(
+                            "Type mismatch for parameter '" + p.Name + "'. Expected type '" +
+                            expectedType + "', but received '" + receivedType +
+                            "'. Inner error: " + ex.Message);
+                    }
+                }
+                else if (p.IsOptional)
+                {
+                    // Even if the schema advertised it as required (promoted),
+                    // a usable CLR default exists — degrade gracefully rather
+                    // than failing the whole call.
+                    invokeArgs[i] = p.DefaultValue;
+                }
+                else
+                {
+                    // Self-correction feedback: list only the VISIBLE
+                    // parameters (hidden ones would confuse the model).
+                    string expectedParams = string.Join(", ",
+                        plans.Where(pl => !pl.Hidden).Select(pl => pl.Info.Name));
+                    string receivedParams = arguments.Count > 0
+                        ? string.Join(", ", arguments.Keys)
+                        : "None";
+
+                    throw new ArgumentException(
+                        "Required parameter '" + p.Name + "' is missing.\n" +
+                        "Expected parameters: [" + expectedParams + "]\n" +
+                        "Received arguments: [" + receivedParams + "]");
+                }
             }
-            catch (TargetInvocationException tie)
-            {
-                string msg = tie.InnerException != null ? tie.InnerException.Message : tie.Message;
-                return BuildResult(id, BuildToolContent("Error executing command: " + msg, isError: true));
-            }
-            catch (Exception ex)
-            {
-                return BuildResult(id, BuildToolContent("Error executing command: " + ex.Message, isError: true));
-            }
+
+            return invokeArgs;
         }
 
         private static object BuildToolContent(string text, bool isError)
@@ -1286,57 +1399,7 @@ namespace DotNetPlugin
 
         #endregion
 
-        #region Schema / parameter helpers
-
-        private static string GetJsonSchemaType(Type type)
-        {
-            if (type == null) return "null";
-
-            // Unwrap Nullable<T>.
-            var underlying = Nullable.GetUnderlyingType(type);
-            if (underlying != null) type = underlying;
-
-            if (type == typeof(string) || type == typeof(Guid) || type.IsEnum) return "string";
-            if (type == typeof(int) || type == typeof(long) || type == typeof(short)
-                || type == typeof(byte) || type == typeof(uint) || type == typeof(ulong)
-                || type == typeof(ushort) || type == typeof(sbyte)) return "integer";
-            if (type == typeof(float) || type == typeof(double) || type == typeof(decimal)) return "number";
-            if (type == typeof(bool)) return "boolean";
-            if (type == typeof(DateTime) || type == typeof(DateTimeOffset)) return "string";
-            if (type.IsArray || typeof(IEnumerable).IsAssignableFrom(type)) return "array";
-            return "object";
-        }
-
-        private static string GetParameterDescription(MethodInfo method, ParameterInfo param)
-        {
-            // 1. Parameter-level [McpParam("...")]
-            var pAttr = param.GetCustomAttribute<McpParamAttribute>(inherit: true);
-            if (pAttr != null && !string.IsNullOrWhiteSpace(pAttr.Description))
-                return pAttr.Description;
-
-            // 2. Method-level [McpParam("paramName","...")]
-            foreach (var mAttr in method.GetCustomAttributes<McpParamAttribute>(inherit: true))
-            {
-                if (!string.IsNullOrEmpty(mAttr.Name)
-                    && string.Equals(mAttr.Name, param.Name, StringComparison.OrdinalIgnoreCase)
-                    && !string.IsNullOrWhiteSpace(mAttr.Description))
-                {
-                    return mAttr.Description;
-                }
-            }
-
-            // 3. Name-based fallback (preserves legacy hardcoded hints).
-            switch (param.Name)
-            {
-                case "address": return "Address to target with function (Example format: 0x12345678)";
-                case "value": return "Value to pass to command (Example format: 100)";
-                case "byteCount": return "Count of how many bytes to request for (Example format: 100)";
-                case "pfilepath": return "File path (Example format: C:\\output.txt)";
-                case "mode": return "mode=[Comment | Label] (Example format: mode=Comment)";
-                case "byteString": return "Writes the provided Hex bytes (Example format: byteString=00 90 0F)";
-                default: return "Parameter for " + method.Name;
-            }
-        }
+        #region Argument conversion
 
         private static object ConvertArgument(object argValue, Type targetType, string paramName)
         {

@@ -348,6 +348,7 @@ namespace DotNetPlugin
             }
 
             Console.WriteLine("MCP tool cache built: " + _tools.Count + " tool(s) registered.");
+            _tools.ToList().ForEach(t => Console.WriteLine($"Tool: {t.Key}({string.Join(", ", t.Value.Parameters.Select(p => p.Info.Name))}) | Description: {t.Value.Description})"));
         }
 
         /// <summary>

@@ -108,15 +108,18 @@
 		  <PluginDestDir Condition="'$(Platform)'=='x86'">$(X96DbgRootPath)\x32\plugins\x64DbgMCPServer</PluginDestDir>
 	  </PropertyGroup>
 
-	  <!-- 1. Copy the main plugin file (.dp64 or .dp32) -->
+	  <!-- Copy the main plugin file (.dp64 or .dp32) -->
 	  <Exec Condition="'$(Platform)'=='x64' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.dp64&quot; &quot;$(PluginDestDir)\&quot;" />
 
 	  <Exec Condition="'$(Platform)'=='x86' AND Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)*.dp32&quot; &quot;$(PluginDestDir)\&quot;" />
 
-	  <!-- 2. Copy the RemotingHelper DLL (required dependency) -->
+	  <!-- Copy the RemotingHelper DLL (required dependency) -->
 	  <Exec Condition="Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.RemotingHelper.dll&quot; &quot;$(PluginDestDir)\&quot;" />
 
-	  <!-- 3. Optional: Copy the PDB for debugging in x96dbg if needed -->
+	  <!-- Copy the RemotingHelper DLL (required dependency) -->
+	  <Exec Condition="Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.Impl.dll&quot; &quot;$(PluginDestDir)\&quot;" />
+	  
+	  <!-- Optional: Copy the PDB for debugging in x96dbg if needed -->
 	  <Exec Condition="Exists('$(X96DbgRootPath)')" Command="xcopy /Y /I &quot;$(TargetDir)x64DbgMCPServer.pdb&quot; &quot;$(PluginDestDir)\&quot;" />
 	  
   </Target>

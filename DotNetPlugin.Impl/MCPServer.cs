@@ -89,7 +89,7 @@ namespace DotNetPlugin
 
         private const string ProtocolVersion = "2025-11-25";
         private const string ServerName = "AgentSmithes x96Dbg";
-        private const string ServerVersion = "1.5";
+        private const string ServerVersion = "1.6";
         private const int HeartbeatIntervalMs = 15000;
 
         // Shared serializer — JavaScriptSerializer is thread-safe for

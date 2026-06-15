@@ -204,11 +204,31 @@ namespace DotNetPlugin.NativeBindings.SDK
 
 
 
-        // Update the P/Invoke signature to use the new struct name
+        /*
         [DllImport("x64dbg.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "_dbg_addrinfoget", ExactSpelling = true, CharSet = CharSet.Ansi)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool DbgAddrInfoGet(nuint addr, int segment, ref BRIDGE_ADDRINFO_NATIVE addrinfo); // Use new struct
+        */
 
+        private static readonly bool Is64 = IntPtr.Size == 8;
+
+        // Backing external declarations — one per debugger-core DLL.
+        // These are 'extern' with no body; that's what [DllImport] requires.
+        [DllImport("x64dbg.dll", CallingConvention = CallingConvention.Cdecl,
+           EntryPoint = "_dbg_addrinfoget", ExactSpelling = true, CharSet = CharSet.Ansi)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool DbgAddrInfoGet64(nuint addr, int segment, ref BRIDGE_ADDRINFO_NATIVE addrinfo);
+
+        [DllImport("x32dbg.dll", CallingConvention = CallingConvention.Cdecl,
+           EntryPoint = "_dbg_addrinfoget", ExactSpelling = true, CharSet = CharSet.Ansi)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool DbgAddrInfoGet32(nuint addr, int segment, ref BRIDGE_ADDRINFO_NATIVE addrinfo);
+
+        // Dispatcher — a normal method (NO [DllImport], NO 'extern'), picks by process bitness.
+        public static bool DbgAddrInfoGet(nuint addr, int segment, ref BRIDGE_ADDRINFO_NATIVE addrinfo)
+            => Is64
+                ? DbgAddrInfoGet64(addr, segment, ref addrinfo)
+                : DbgAddrInfoGet32(addr, segment, ref addrinfo);
 
 
         [DllImport(dll, CallingConvention = cdecl, ExactSpelling = true)]

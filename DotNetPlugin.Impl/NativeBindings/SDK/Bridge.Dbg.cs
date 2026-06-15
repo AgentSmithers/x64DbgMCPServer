@@ -103,8 +103,6 @@ namespace DotNetPlugin.NativeBindings.SDK
 
 
 
-
-
         [Flags]
         public enum ADDRINFOFLAGS
         {
@@ -117,6 +115,9 @@ namespace DotNetPlugin.NativeBindings.SDK
             flagargs = 0x40,
             flagNoFuncOffset = 0x80
         }
+
+        /*
+        
 
         // Represents FUNCTION, LOOP, ARG structures (simplified)
         [StructLayout(LayoutKind.Sequential, Pack = NativePacking)]
@@ -147,6 +148,61 @@ namespace DotNetPlugin.NativeBindings.SDK
             public FUNCTION_LOOP_INFO loop;     // Output: Loop info
             public FUNCTION_LOOP_INFO args;     // Output: Argument info
         }
+        */
+
+
+
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BRIDGE_FUNCTION  // FUNCTION
+        {
+            public nuint start;
+            public nuint end;
+            public nuint instrcount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BRIDGE_LOOP      // LOOP
+        {
+            public int depth;
+            public nuint start;
+            public nuint end;
+            public nuint instrcount;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        public struct BRIDGE_ADDRINFO_NATIVE
+        {
+            public int flags;  // ADDRINFOFLAGS
+
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] // MAX_MODULE_SIZE
+            public string module;
+
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] // MAX_LABEL_SIZE
+            public string label;
+
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 512)] // MAX_COMMENT_SIZE
+            public string comment;
+
+            [MarshalAs(UnmanagedType.I1)]  // C++ bool is 1 byte — must NOT default to 4-byte BOOL
+            public bool isbookmark;
+
+            public BRIDGE_FUNCTION function;
+            public BRIDGE_LOOP loop;
+            public BRIDGE_FUNCTION args;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
 
         // Update the P/Invoke signature to use the new struct name
         [DllImport("x64dbg.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "_dbg_addrinfoget", ExactSpelling = true, CharSet = CharSet.Ansi)]

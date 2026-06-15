@@ -1,3 +1,9 @@
+using DotNetPlugin.NativeBindings;
+using DotNetPlugin.NativeBindings.Script;
+using DotNetPlugin.NativeBindings.SDK;
+using DotNetPlugin.Properties;
+using Microsoft.VisualBasic;
+using Microsoft.VisualBasic.CompilerServices;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10,13 +16,8 @@ using System.Runtime.Remoting.Messaging;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
-using DotNetPlugin.NativeBindings;
-using DotNetPlugin.NativeBindings.Script;
-using DotNetPlugin.NativeBindings.SDK;
-using DotNetPlugin.Properties;
-using Microsoft.VisualBasic;
-using Microsoft.VisualBasic.CompilerServices;
 using static DotNetPlugin.NativeBindings.SDK.Bridge;
+using static DotNetPlugin.NativeBindings.SDK.BridgeBase;
 
 namespace DotNetPlugin
 {
@@ -1750,85 +1751,954 @@ MCPCmdDescription = "Searches process memory for a specific text string and retu
         }
 
 
-        // Define a struct to hold the frame info we can gather
-        public struct CallStackFrameInfo
+
+
+
+
+
+
+
+
+
+
+
+
+        public static bool VerboseLogging = true;
+
+        private static void Log(string msg)
         {
-            public nuint FrameAddress; // Value of RBP for this frame
-            public nuint ReturnAddress; // Address execution returns to
-            public nuint FrameSize;     // Calculated size (approx)
+            if (VerboseLogging) Console.WriteLine(msg);
         }
 
-        // Modified function to return richer frame info
-        public static List<CallStackFrameInfo> GetCallStackFunc(int maxFrames = 32)
-        {
-            var callstack = new List<CallStackFrameInfo>();
-            byte[] addrBuffer = new byte[sizeof(ulong)];
+        // Always print hex WITH the value's true hex digits. (The stale build printed RSP
+        // in decimal behind a "0x" prefix — that bug is impossible with these helpers.)
+        private static string H(ulong v) => "0x" + v.ToString("X");
+        private static string H(nuint v) => "0x" + ((ulong)v).ToString("X");
 
-            // Get initial stack pointers from the debugger
-            nuint rbp = DbgValFromStringAsNUInt("rbp");
-            nuint rsp = DbgValFromStringAsNUInt("rsp");
-            nuint currentRbp = rbp;
-            nuint previousRbp = 0;
+        // ------------------------------------------------------------------ public API
+        public enum TargetArch { Auto = 0, X86 = 4, X64 = 8 } // value == pointer size
+
+        public struct CallStackFrameInfo
+        {
+            public nuint FrameAddress;   // stack slot holding the return address (matches x64dbg "Address")
+            public nuint ReturnAddress;  // value at that slot          (matches x64dbg "To")
+            public nuint FrameSize;      // distance to caller frame    (matches x64dbg "Size")
+            public bool IsHeuristic;    // true = scan-derived, NOT a verified unwind
+        }
+
+        // x64 general-purpose register indices (UNWIND_CODE OpInfo encoding)
+        private const int RAX = 0, RCX = 1, RDX = 2, RBX = 3, RSP = 4, RBP = 5, RSI = 6, RDI = 7;
+        private static readonly string[] RegName =
+            { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" };
+
+        [Command("GetCallStack", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose,
+MCPCmdDescription = "Retrieves the current execution call stack by walking RBP frames. Use immediately after a breakpoint hits to trace which module/function originally called the current code. Requires execution to be paused.")]
+        public static string GetCallStackFunc([McpParam("Maximum number of stack frames to walk before stopping. Defaults to 32.",
+                Required = false, Minimum = 1, Maximum = 256, Examples = new[] { "32" })]
+            int maxFrames = 32)
+        {
+            TargetArch arch = TargetArch.Auto;
+            bool extendWithHeuristic = false;
+            Log("==================================================================");
+            Log($"[GetCallStackFunc] ENTER  maxFrames={maxFrames}  arch={arch}  extendWithHeuristic={extendWithHeuristic}");
+
+            var callstack = new List<CallStackFrameInfo>();
+
+            int pointerSize = ResolvePointerSize(arch);
+            if (pointerSize != 4 && pointerSize != 8)
+            {
+                Log($"[GetCallStackFunc] Bad pointer size {pointerSize}. Aborting.");
+                return $"[GetCallStackFunc] Bad pointer size {pointerSize}. Aborting.";
+            }
+
+            string bpReg = pointerSize == 8 ? "rbp" : "ebp";
+            string spReg = pointerSize == 8 ? "rsp" : "esp";
+            string ipReg = pointerSize == 8 ? "rip" : "eip";
+            byte[] addrBuffer = new byte[8];
+
+            nuint bp = DbgValFromStringAsNUInt(bpReg);
+            nuint sp = DbgValFromStringAsNUInt(spReg);
+            nuint ip = DbgValFromStringAsNUInt(ipReg);
+
+            Log($"[GetCallStackFunc] {pointerSize * 8}-bit context:");
+            Log($"    {ipReg} = {H(ip)}");
+            Log($"    {spReg} = {H(sp)}   (decimal {(ulong)sp})");
+            Log($"    {bpReg} = {H(bp)}");
+
+            if (sp == 0)
+            {
+                Log("[GetCallStackFunc] Stack pointer is 0 — no usable context. Aborting.");
+                return "[GetCallStackFunc] Stack pointer is 0 — no usable context. Aborting.";
+            }
+
+            // ---------------------------------------------------------------- dispatch
+            if (pointerSize == 8)
+            {
+                // PRIMARY for x64: unwind-info walk. Works regardless of RBP (RBP==0 is normal here).
+                Log("[GetCallStackFunc] x64 -> unwind-info walk (RtlVirtualUnwind-style).");
+                callstack = WalkX64UnwindInfo(ip, sp, bp, addrBuffer, maxFrames);
+
+                if (callstack.Count == 0)
+                {
+                    Log("[GetCallStackFunc] Unwind-info walk produced 0 frames. " +
+                        "Check that mod.base(<addr>) resolves through your bridge. " +
+                        "Falling back to heuristic scan (will NOT match the GUI).");
+                    callstack = WalkStackHeuristic(sp, pointerSize, addrBuffer, maxFrames);
+                }
+            }
+            else
+            {
+                // PRIMARY for x86: EBP chain.
+                nuint alignMask = (nuint)(pointerSize - 1);
+                bool bpValid = bp != 0 && bp >= sp && (bp & alignMask) == 0;
+                Log($"[GetCallStackFunc] x86 EBP valid? {bpValid} " +
+                    $"(nonzero={bp != 0}, ebp>=esp={bp >= sp}, aligned={(bp & alignMask) == 0})");
+
+                if (bpValid)
+                    callstack = WalkFramePointerChain(bp, sp, pointerSize, addrBuffer, maxFrames);
+
+                if (callstack.Count == 0)
+                {
+                    Log("[GetCallStackFunc] EBP chain empty — heuristic scan fallback.");
+                    callstack = WalkStackHeuristic(sp, pointerSize, addrBuffer, maxFrames);
+                }
+            }
+
+            // ---------------------------------------------------------------- optional extension
+            if (extendWithHeuristic && callstack.Count > 0 && callstack.Count < maxFrames)
+            {
+                nuint resumeFrom = callstack[callstack.Count - 1].FrameAddress + (nuint)pointerSize;
+                Log($"[GetCallStackFunc] extendWithHeuristic: scanning from {H(resumeFrom)}");
+                var extra = WalkStackHeuristic(resumeFrom, pointerSize, addrBuffer, maxFrames - callstack.Count);
+                callstack.AddRange(extra);
+            }
+
+            DumpResult(callstack);
+            Log($"[GetCallStackFunc] EXIT  returning {callstack.Count} frame(s).");
+            Log("==================================================================");
+            //return callstack;
+            var output = new StringBuilder();
+            output.AppendLine($"[GetCallStack] Retrieved {callstack.Count} frames:");
+            output.AppendLine($"{"Frame",-5} {"Frame Addr",-18} {"Return Addr",-18} {"Size",-10} {"Module",-25} {"Label Symbol",-40} {"Comment"}");
+            output.AppendLine(new string('-', 130));
+
+            for (int i = 0; i < callstack.Count; i++)
+            {
+                var frame = callstack[i];
+
+                // x64dbg labels each frame by the code it's executing IN (its "From"),
+                // not the address it returns to. Innermost frame -> RIP; every outer
+                // frame -> the return address captured one frame further in.
+                nuint fromAddr = (i == 0) ? ip : callstack[i - 1].ReturnAddress;
+                TryResolveSymbols(fromAddr, out AddressSymbols symbols);
+
+                string frameAddrHex = ((ulong)frame.FrameAddress).ToString("X16");
+                string returnAddrHex = ((ulong)frame.ReturnAddress).ToString("X16");
+                string frameSizeHex = ((ulong)frame.FrameSize).ToString("X");
+
+                output.AppendLine($"{$"[ {i}]",-5} 0x{frameAddrHex} 0x{returnAddrHex} 0x{frameSizeHex,-8} " +
+                                  $"{symbols.Module,-20} {symbols.Symbolic,-45} {symbols.Comment}");
+            }
+
+            return output.ToString().TrimEnd(); // remove trailing newline
+        }
+
+        public class AddressSymbols
+        {
+            public string Module { get; set; } = "N/A";
+            public string Label { get; set; } = "N/A";  // "RtlGetReturnAddressHijackTarget+6EE"
+            public string Comment { get; set; } = "";      // instruction-level comment (usually empty here)
+            public string Symbolic { get; set; } = "N/A";   // "ntdll.RtlGetReturnAddressHijackTarget+6EE"
+        }
+
+        private static bool TryResolveSymbols(nuint address, out AddressSymbols symbols)
+        {
+            symbols = new AddressSymbols();
+
+            var info = new BRIDGE_ADDRINFO_NATIVE
+            {
+                // flaglabel -> symbol name; leaving flagNoFuncOffset UNSET keeps the "+offset" suffix.
+                flags = (int)(ADDRINFOFLAGS.flagmodule
+                            | ADDRINFOFLAGS.flaglabel
+                            | ADDRINFOFLAGS.flagcomment)
+            };
+
+            bool ok = DbgAddrInfoGet(address, 0, ref info);
+
+            string mod = info.module ?? "";
+            string label = info.label ?? "";   // <-- the "function+offset" is HERE, not in comment
+            string cmt = info.comment ?? "";
+
+            symbols.Module = mod.Length > 0 ? mod : "N/A";
+            symbols.Label = label.Length > 0 ? label : "N/A";
+
+            if (cmt.Length > 0)
+                symbols.Comment = cmt[0] == '\x01' ? cmt.Substring(1) : cmt; // strip auto-comment marker
+
+            // Reproduce x64dbg's call-stack "Comment": module + "." + label
+            if (mod.Length > 0 && label.Length > 0) symbols.Symbolic = $"{mod}.{label}";
+            else if (label.Length > 0) symbols.Symbolic = label;
+            else if (mod.Length > 0) symbols.Symbolic = mod;
+
+            return ok;
+        }
+        private static bool TryGetInitialStackPointers(out nuint rbp, out nuint rsp)
+        {
+            rbp = DbgValFromStringAsNUInt("rbp");
+            rsp = DbgValFromStringAsNUInt("rsp");
 
             if (rbp == 0 || rbp < rsp)
             {
-                Console.WriteLine("[GetCallStackFunc] Initial RBP is invalid or below RSP.");
-                return callstack;
+                Console.WriteLine($"[GetCallStackFunc] Initial RBP is invalid or below RSP. RBP=0x{rbp:X} RSP=0x{rsp:X}");
+                return false;
             }
+            return true;
+        }
+
+        public static IEnumerable<CallStackFrameInfo> WalkStackFrames(int maxFrames = 32)
+        {
+            if (!TryGetInitialStackPointers(out nuint rbp, out nuint rsp))
+            {
+                yield break; // Stop iteration if initial pointers are invalid
+            }
+
+            nuint currentRbp = rbp;
+            nuint previousRbp = 0;
 
             for (int i = 0; i < maxFrames; i++)
             {
-                // 1. Read Return Address from [RBP + sizeof(nuint)]
-                if (!DbgMemRead(currentRbp + (nuint)sizeof(ulong), addrBuffer, (nuint)sizeof(ulong)))
+                if (!TryGetFrameInfo(currentRbp, out nuint returnAddress, out nuint nextRbp))
                 {
-                    Console.WriteLine($"[GetCallStackFunc] Failed to read return address at 0x{currentRbp + (nuint)sizeof(ulong):X}");
-                    break;
-                }
-                nuint returnAddress = (nuint)BitConverter.ToUInt64(addrBuffer, 0);
-
-                if (returnAddress == 0)
-                {
-                    Console.WriteLine("[GetCallStackFunc] Reached null return address.");
-                    break;
+                    break; // Stop if we can't read frame info (end of stack or invalid memory)
                 }
 
-                // 2. Read Saved RBP value from [RBP]
-                if (!DbgMemRead(currentRbp, addrBuffer, (nuint)sizeof(ulong)))
-                {
-                    Console.WriteLine($"[GetCallStackFunc] Failed to read saved RBP at 0x{currentRbp:X}");
-                    break;
-                }
-                nuint nextRbp = (nuint)BitConverter.ToUInt64(addrBuffer, 0);
+                nuint frameSize = CalculateFrameSize(currentRbp, previousRbp);
 
-                // Fixed: Stack grows down, so walking backwards means nextRbp > currentRbp
-                nuint frameSize = 0;
-                if (nextRbp > currentRbp)
-                {
-                    frameSize = nextRbp - currentRbp;
-                }
-
-                // Add collected info for this frame
-                callstack.Add(new CallStackFrameInfo
+                yield return new CallStackFrameInfo
                 {
                     FrameAddress = currentRbp,
                     ReturnAddress = returnAddress,
                     FrameSize = frameSize
-                });
+                };
 
-                // Update tracking variables
                 previousRbp = currentRbp;
                 currentRbp = nextRbp;
 
-                // Hardened Validation: next RBP must be higher in memory than the previous one
-                if (currentRbp == 0 || currentRbp < rsp || currentRbp <= previousRbp)
+                if (!IsNextRbpValid(currentRbp, previousRbp, rsp))
                 {
-                    // If it's the end of the chain, log cleanly and exit without spamming
+                    break; // Stop if the next frame pointer is invalid
+                }
+            }
+        }
+        private static bool IsNextRbpValid(nuint currentRbp, nuint previousRbp, nuint rsp)
+        {
+            if (currentRbp == 0 || currentRbp < rsp || currentRbp <= previousRbp)
+            {
+                Console.WriteLine($"[GetCallStackFunc] Invalid next RBP (0x{currentRbp:X}). Previous=0x{previousRbp:X}, RSP=0x{rsp:X}. Stopping walk.");
+                return false;
+            }
+            return true;
+        }
+        private static nuint CalculateFrameSize(nuint currentRbp, nuint previousRbp)
+        {
+            if (previousRbp == 0)
+            {
+                return 0;
+            }
+            // Avoid nonsensical size if RBP decreased or is not what we expect
+            if (currentRbp > previousRbp)
+            {
+                return 0;
+            }
+            return previousRbp - currentRbp;
+        }
+
+        private static bool TryReadNuintFromMemory(nuint address, out nuint value)
+        {
+            byte[] buffer = new byte[sizeof(ulong)];
+            if (DbgMemRead(address, buffer, (nuint)sizeof(ulong)))
+            {
+                value = (nuint)BitConverter.ToUInt64(buffer, 0);
+                return true;
+            }
+            value = 0;
+            Console.WriteLine($"[GetCallStackFunc] Failed to read memory at 0x{address:X}");
+            return false;
+        }
+
+        private static bool TryGetFrameInfo(nuint currentRbp, out nuint returnAddress, out nuint nextRbp)
+        {
+            returnAddress = 0;
+            nextRbp = 0;
+
+            if (!TryReadNuintFromMemory(currentRbp + (nuint)sizeof(ulong), out returnAddress))
+            {
+                return false;
+            }
+
+            if (returnAddress == 0)
+            {
+                Console.WriteLine("[GetCallStackFunc] Reached null return address.");
+                return false;
+            }
+
+            return TryReadNuintFromMemory(currentRbp, out nextRbp);
+        }
+        private static bool TryResolveSymbols_retire(nuint address, out AddressSymbols symbols)
+        {
+            symbols = new AddressSymbols();
+
+            var info = new BRIDGE_ADDRINFO_NATIVE
+            {
+                // flaglabel -> symbol name; leaving flagNoFuncOffset UNSET keeps the "+offset" suffix.
+                flags = (int)(ADDRINFOFLAGS.flagmodule
+                            | ADDRINFOFLAGS.flaglabel
+                            | ADDRINFOFLAGS.flagcomment)
+            };
+
+            bool ok = DbgAddrInfoGet(address, 0, ref info);
+
+            string mod = info.module ?? "";
+            string label = info.label ?? "";   // <-- the "function+offset" is HERE, not in comment
+            string cmt = info.comment ?? "";
+
+            symbols.Module = mod.Length > 0 ? mod : "N/A";
+            symbols.Label = label.Length > 0 ? label : "N/A";
+
+            if (cmt.Length > 0)
+                symbols.Comment = cmt[0] == '\x01' ? cmt.Substring(1) : cmt; // strip auto-comment marker
+
+            // Reproduce x64dbg's call-stack "Comment": module + "." + label
+            if (mod.Length > 0 && label.Length > 0) symbols.Symbolic = $"{mod}.{label}";
+            else if (label.Length > 0) symbols.Symbolic = label;
+            else if (mod.Length > 0) symbols.Symbolic = mod;
+
+            return ok;
+        }
+
+        private static void DumpResult(List<CallStackFrameInfo> cs)
+        {
+            Log("[GetCallStackFunc] Resolved call stack (compare against x64dbg Call Stack view):");
+            Log("    idx  Address(slot)      To(return)        Size     Source");
+            for (int i = 0; i < cs.Count; i++)
+            {
+                var f = cs[i];
+                Log($"    {i,3}  {("0x" + ((ulong)f.FrameAddress).ToString("X16"))}  " +
+                    $"{("0x" + ((ulong)f.ReturnAddress).ToString("X16"))}  " +
+                    $"{((ulong)f.FrameSize),6:X}   {(f.IsHeuristic ? "HEURISTIC" : "unwind/fp")}");
+            }
+        }
+
+        // ============================================================== arch detection
+        private static int ResolvePointerSize(TargetArch arch)
+        {
+            if (arch == TargetArch.X86) { Log("[ResolvePointerSize] Forced x86 (4)."); return 4; }
+            if (arch == TargetArch.X64) { Log("[ResolvePointerSize] Forced x64 (8)."); return 8; }
+
+            // Auto-detect. WARNING: unreliable under WOW64 — a 64-bit debugger may resolve
+            // "rip" for a 32-bit thread. Pass arch explicitly when you know the target.
+            Log("[ResolvePointerSize] Auto-detect (pass arch explicitly to avoid WOW64 ambiguity)...");
+            try
+            {
+                nuint rip = DbgValFromStringAsNUInt("rip");
+                Log($"    rip -> {H(rip)}");
+                if (rip != 0) { Log("    -> 64-bit."); return 8; }
+
+                nuint eip = DbgValFromStringAsNUInt("eip");
+                Log($"    eip -> {H(eip)}");
+                if (eip != 0) { Log("    -> 32-bit."); return 4; }
+            }
+            catch (Exception ex) { Log($"    auto-detect threw: {ex.Message}"); }
+
+            Log("[ResolvePointerSize] Auto-detect failed; defaulting to 64-bit.");
+            return 8;
+        }
+
+        // ============================================================== memory helpers
+        private static bool ReadBytes(ulong va, byte[] buf, int size)
+        {
+            if (buf.Length < size) return false;
+            bool ok = DbgMemRead((nuint)va, buf, (nuint)size);
+            if (!ok) Log($"        [mem] read FAILED  va={H(va)} size={size}");
+            return ok;
+        }
+
+        private static bool ReadU8(ulong va, out byte val)
+        {
+            val = 0; var b = new byte[1];
+            if (!ReadBytes(va, b, 1)) return false;
+            val = b[0]; return true;
+        }
+
+        private static bool ReadU16(ulong va, out ushort val)
+        {
+            val = 0; var b = new byte[2];
+            if (!ReadBytes(va, b, 2)) return false;
+            val = BitConverter.ToUInt16(b, 0); return true;
+        }
+
+        private static bool ReadU32(ulong va, out uint val)
+        {
+            val = 0; var b = new byte[4];
+            if (!ReadBytes(va, b, 4)) return false;
+            val = BitConverter.ToUInt32(b, 0); return true;
+        }
+
+        private static bool ReadPtr64(ulong va, out ulong val)
+        {
+            val = 0; var b = new byte[8];
+            if (!ReadBytes(va, b, 8)) return false;
+            val = BitConverter.ToUInt64(b, 0); return true;
+        }
+
+        private static bool TryReadPointer(nuint va, int pointerSize, byte[] buffer, out nuint value)
+        {
+            value = 0;
+            Array.Clear(buffer, 0, pointerSize);
+            if (!DbgMemRead(va, buffer, (nuint)pointerSize)) return false;
+            value = pointerSize == 8
+                ? (nuint)BitConverter.ToUInt64(buffer, 0)
+                : (nuint)BitConverter.ToUInt32(buffer, 0);
+            return true;
+        }
+
+        // ============================================================== x64 UNWIND WALK
+        // Mirrors RtlVirtualUnwind: for each frame, find the module's exception directory,
+        // locate the RUNTIME_FUNCTION covering RIP, replay the UNWIND_INFO to adjust RSP,
+        // then the return address is at [RSP] and the slot is the frame's "Address".
+        private static List<CallStackFrameInfo> WalkX64UnwindInfo(
+            nuint startRip, nuint startRsp, nuint startRbp, byte[] addrBuffer, int maxFrames)
+        {
+            var stack = new List<CallStackFrameInfo>();
+
+            var regs = new ulong[16];
+            regs[RSP] = startRsp;
+            regs[RBP] = startRbp; // 0 is fine; only matters if a SET_FPREG references it.
+
+            ulong rip = startRip;
+
+            for (int frame = 0; frame < maxFrames; frame++)
+            {
+                Log($"  ---------------------------------------------------------------");
+                Log($"  [unwind] frame {frame}: RIP={H(rip)} RSP={H(regs[RSP])} RBP={H(regs[RBP])}");
+
+                // 1) Module base for RIP.
+                nuint modBaseN = DbgValFromStringAsNUInt($"mod.base(0x{rip:X})");
+                ulong modBase = modBaseN;
+                Log($"  [unwind] mod.base({H(rip)}) = {H(modBase)}");
+                if (modBase == 0)
+                {
+                    Log("  [unwind] RIP not in a known module (JIT/dynamic/bad expr). Stopping.");
                     break;
+                }
+
+                uint funcRva = (uint)(rip - modBase);
+
+                // 2) Exception directory -> RUNTIME_FUNCTION covering funcRva.
+                if (!TryGetExceptionDirectory(modBase, out ulong exTableVa, out uint exTableSize))
+                {
+                    Log("  [unwind] No exception directory. Treating as leaf.");
+                    if (!PopReturnAddress(regs, addrBuffer, stack)) break;
+                    rip = stack[stack.Count - 1].ReturnAddress;
+                    if (!ContinueChecks(regs, rip)) break;
+                    continue;
+                }
+
+                if (!TryFindRuntimeFunction(modBase, exTableVa, exTableSize, funcRva,
+                                            out uint rfBegin, out uint rfEnd, out uint rfUnwindRva))
+                {
+                    // No unwind data for this RVA => leaf function: return addr at [RSP].
+                    Log($"  [unwind] No RUNTIME_FUNCTION for rva={H(funcRva)} -> leaf function.");
+                    if (!PopReturnAddress(regs, addrBuffer, stack)) break;
+                    rip = stack[stack.Count - 1].ReturnAddress;
+                    if (!ContinueChecks(regs, rip)) break;
+                    continue;
+                }
+
+                Log($"  [unwind] RUNTIME_FUNCTION begin={H(rfBegin)} end={H(rfEnd)} unwindRva={H(rfUnwindRva)} " +
+                    $"(funcRva={H(funcRva)})");
+
+                // 3) Replay the unwind info chain to adjust RSP (and recover RBP if pushed).
+                bool machineFrame = false;
+                ulong machineRip = 0;
+                uint curUnwindRva = rfUnwindRva;
+                uint prologOffset = funcRva - rfBegin; // only relevant if we're inside the prolog
+                int chainGuard = 0;
+
+                while (true)
+                {
+                    if (++chainGuard > 32) { Log("  [unwind] chain too deep, bailing."); break; }
+                    if (!ApplyUnwindInfo(modBase, curUnwindRva, prologOffset, regs,
+                                         ref machineFrame, ref machineRip, out bool chained, out uint nextUnwindRva))
+                    {
+                        Log("  [unwind] failed reading UNWIND_INFO. Stopping walk.");
+                        return stack;
+                    }
+                    if (machineFrame) break;
+                    if (!chained) break;
+                    Log($"  [unwind] CHAININFO -> parent unwindRva={H(nextUnwindRva)}");
+                    curUnwindRva = nextUnwindRva;
+                    prologOffset = 0xFFFFFFFF; // parent codes always fully apply
+                }
+
+                // 4) Return address.
+                ulong retSlot, retAddr;
+                if (machineFrame)
+                {
+                    // PUSH_MACHFRAME already set RSP/RIP; record the machine-frame return.
+                    retAddr = machineRip;
+                    retSlot = regs[RSP]; // approximate; machine frames are rare
+                    Log($"  [unwind] machine frame: RIP={H(retAddr)} newRSP={H(regs[RSP])}");
+                }
+                else
+                {
+                    retSlot = regs[RSP];
+                    if (!ReadPtr64(retSlot, out retAddr))
+                    {
+                        Log($"  [unwind] failed reading return address at {H(retSlot)}. Stopping.");
+                        break;
+                    }
+                    regs[RSP] = retSlot + 8;
+                }
+
+                Log($"  [unwind] frame {frame} RESULT: slot(Address)={H(retSlot)} return(To)={H(retAddr)} " +
+                    $"newRSP={H(regs[RSP])}");
+
+                // record (FrameSize is filled in on the next iteration once we know the next slot)
+                stack.Add(new CallStackFrameInfo
+                {
+                    FrameAddress = (nuint)retSlot,
+                    ReturnAddress = (nuint)retAddr,
+                    FrameSize = 0,
+                    IsHeuristic = false
+                });
+
+                if (retAddr == 0)
+                {
+                    Log("  [unwind] return address 0 -> top of stack (thread entry). Done.");
+                    break;
+                }
+
+                rip = retAddr;
+                if (!ContinueChecks(regs, rip)) break;
+            }
+
+            // Fill FrameSize = nextSlot - thisSlot (matches x64dbg "Size").
+            for (int i = 0; i + 1 < stack.Count; i++)
+            {
+                var f = stack[i];
+                ulong here = f.FrameAddress, next = stack[i + 1].FrameAddress;
+                f.FrameSize = (nuint)(next > here ? next - here : 0);
+                stack[i] = f;
+            }
+
+            return stack;
+        }
+
+        // Leaf helper: return address sits directly at [RSP].
+        private static bool PopReturnAddress(ulong[] regs, byte[] _buf, List<CallStackFrameInfo> stack)
+        {
+            ulong slot = regs[RSP];
+            if (!ReadPtr64(slot, out ulong ret)) return false;
+            regs[RSP] = slot + 8;
+            Log($"  [unwind] leaf pop: slot={H(slot)} return={H(ret)} newRSP={H(regs[RSP])}");
+            stack.Add(new CallStackFrameInfo
+            {
+                FrameAddress = (nuint)slot,
+                ReturnAddress = (nuint)ret,
+                FrameSize = 0,
+                IsHeuristic = false
+            });
+            return ret != 0;
+        }
+
+        // Sanity gates between frames.
+        private static bool ContinueChecks(ulong[] regs, ulong nextRip)
+        {
+            if (regs[RSP] == 0) { Log("  [unwind] RSP became 0. Stop."); return false; }
+            if ((regs[RSP] & 0x7) != 0) { Log($"  [unwind] RSP {H(regs[RSP])} misaligned. Stop."); return false; }
+            if (nextRip < 0x10000) { Log($"  [unwind] next RIP {H(nextRip)} too low. Stop."); return false; }
+            return true;
+        }
+
+        // ---- PE parsing: locate IMAGE_DIRECTORY_ENTRY_EXCEPTION (index 3) ----
+        private static bool TryGetExceptionDirectory(ulong modBase, out ulong tableVa, out uint tableSize)
+        {
+            tableVa = 0; tableSize = 0;
+
+            if (!ReadU32(modBase + 0x3C, out uint eLfanew)) return false;
+            ulong nt = modBase + eLfanew;
+
+            if (!ReadU32(nt, out uint sig) || sig != 0x00004550 /* "PE\0\0" */)
+            {
+                Log($"  [pe] bad PE signature at {H(nt)} (got {H(sig)})");
+                return false;
+            }
+
+            ulong optHdr = nt + 24; // 4 (sig) + 20 (file header)
+            if (!ReadU16(optHdr, out ushort magic)) return false;
+
+            // DataDirectory offset within optional header: PE32+ => 112, PE32 => 96
+            int dirOffset = (magic == 0x20B) ? 112 : 96;
+            ulong dirEntry = optHdr + (ulong)dirOffset + (3 * 8); // entry #3 (exception)
+
+            if (!ReadU32(dirEntry, out uint rva)) return false;
+            if (!ReadU32(dirEntry + 4, out uint size)) return false;
+
+            if (rva == 0 || size == 0)
+            {
+                Log("  [pe] exception directory empty (no .pdata).");
+                return false;
+            }
+
+            tableVa = modBase + rva;
+            tableSize = size;
+            Log($"  [pe] exception dir rva={H(rva)} size={H(size)} -> va={H(tableVa)} " +
+                $"({size / 12} RUNTIME_FUNCTION entries)");
+            return true;
+        }
+
+        // Binary search the RUNTIME_FUNCTION array (sorted by BeginAddress).
+        private static bool TryFindRuntimeFunction(
+            ulong modBase, ulong tableVa, uint tableSize, uint funcRva,
+            out uint begin, out uint end, out uint unwindRva)
+        {
+            begin = end = unwindRva = 0;
+            int count = (int)(tableSize / 12);
+            int lo = 0, hi = count - 1;
+
+            while (lo <= hi)
+            {
+                int mid = (lo + hi) >> 1;
+                ulong entry = tableVa + (ulong)mid * 12;
+                if (!ReadU32(entry, out uint b)) return false;
+                if (!ReadU32(entry + 4, out uint e)) return false;
+
+                if (funcRva < b) hi = mid - 1;
+                else if (funcRva >= e) lo = mid + 1;
+                else
+                {
+                    if (!ReadU32(entry + 8, out uint u)) return false;
+                    begin = b; end = e; unwindRva = u;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // ---- UNWIND_INFO replay (the heart of RtlVirtualUnwind) ----
+        private const int UNW_FLAG_CHAININFO = 0x4;
+
+        private static bool ApplyUnwindInfo(
+            ulong modBase, uint unwindRva, uint prologOffset, ulong[] regs,
+            ref bool machineFrame, ref ulong machineRip,
+            out bool chained, out uint nextUnwindRva)
+        {
+            chained = false; nextUnwindRva = 0;
+
+            ulong infoVa = modBase + unwindRva;
+            if (!ReadU8(infoVa + 0, out byte verFlags)) return false;
+            if (!ReadU8(infoVa + 1, out byte sizeOfProlog)) return false;
+            if (!ReadU8(infoVa + 2, out byte countOfCodes)) return false;
+            if (!ReadU8(infoVa + 3, out byte frameRegInfo)) return false;
+
+            int version = verFlags & 0x7;
+            int flags = (verFlags >> 3) & 0x1F;
+            int frameReg = frameRegInfo & 0xF;
+            int frameOff = (frameRegInfo >> 4) & 0xF; // scaled by 16
+
+            Log($"  [uinfo] @{H(infoVa)} ver={version} flags={H((ulong)flags)} prologSize={sizeOfProlog} " +
+                $"codes={countOfCodes} frameReg={(frameReg == 0 ? "-" : RegName[frameReg])} frameOff={frameOff * 16}");
+
+            // Read all code slots (2 bytes each).
+            int codeBytes = countOfCodes * 2;
+            byte[] codes = new byte[Math.Max(codeBytes, 2)];
+            if (codeBytes > 0 && !ReadBytes(infoVa + 4, codes, codeBytes)) return false;
+
+            bool inProlog = prologOffset < sizeOfProlog;
+            if (inProlog)
+                Log($"  [uinfo] RIP is INSIDE prolog (off={prologOffset} < {sizeOfProlog}); applying executed codes only.");
+
+            int i = 0;
+            while (i < countOfCodes)
+            {
+                byte codeOffset = codes[2 * i];
+                byte b1 = codes[2 * i + 1];
+                int op = b1 & 0xF;
+                int opInfo = (b1 >> 4) & 0xF;
+                int slots = UnwindSlotCount(op, opInfo, codes, i, countOfCodes);
+
+                // If we're still in the prolog, ops that haven't executed yet (codeOffset >
+                // current prolog offset) must be skipped — but still advance the index.
+                if (inProlog && codeOffset > prologOffset)
+                {
+                    Log($"    [code] skip (not yet executed) op={op} opInfo={opInfo} at prologOff={codeOffset}");
+                    i += slots;
+                    continue;
+                }
+
+                ulong rspBefore = regs[RSP];
+                switch (op)
+                {
+                    case 0: // UWOP_PUSH_NONVOL
+                        if (ReadPtr64(regs[RSP], out ulong popped)) regs[opInfo] = popped;
+                        regs[RSP] += 8;
+                        Log($"    [code] PUSH_NONVOL {RegName[opInfo]}: RSP {H(rspBefore)}->{H(regs[RSP])} " +
+                            $"({RegName[opInfo]}={H(regs[opInfo])})");
+                        break;
+
+                    case 1: // UWOP_ALLOC_LARGE
+                        if (opInfo == 0)
+                        {
+                            uint sz = (uint)(codes[2 * (i + 1)] | (codes[2 * (i + 1) + 1] << 8)) * 8u;
+                            regs[RSP] += sz;
+                            Log($"    [code] ALLOC_LARGE(small form) +{H(sz)}: RSP {H(rspBefore)}->{H(regs[RSP])}");
+                        }
+                        else
+                        {
+                            uint sz = (uint)(codes[2 * (i + 1)] | (codes[2 * (i + 1) + 1] << 8)
+                                           | (codes[2 * (i + 2)] << 16) | (codes[2 * (i + 2) + 1] << 24));
+                            regs[RSP] += sz;
+                            Log($"    [code] ALLOC_LARGE(large form) +{H(sz)}: RSP {H(rspBefore)}->{H(regs[RSP])}");
+                        }
+                        break;
+
+                    case 2: // UWOP_ALLOC_SMALL
+                        {
+                            uint sz = (uint)(opInfo * 8 + 8);
+                            regs[RSP] += sz;
+                            Log($"    [code] ALLOC_SMALL +{H(sz)}: RSP {H(rspBefore)}->{H(regs[RSP])}");
+                        }
+                        break;
+
+                    case 3: // UWOP_SET_FPREG: RSP = frameReg - frameOff*16
+                        regs[RSP] = regs[frameReg] - (ulong)(frameOff * 16);
+                        Log($"    [code] SET_FPREG: RSP = {RegName[frameReg]}({H(regs[frameReg])}) - {frameOff * 16} " +
+                            $"= {H(regs[RSP])}");
+                        break;
+
+                    case 4: // UWOP_SAVE_NONVOL: reg saved at RSP + off*8 (RSP unchanged)
+                        {
+                            uint off = (uint)(codes[2 * (i + 1)] | (codes[2 * (i + 1) + 1] << 8)) * 8u;
+                            if (ReadPtr64(regs[RSP] + off, out ulong v)) regs[opInfo] = v;
+                            Log($"    [code] SAVE_NONVOL {RegName[opInfo]} @ RSP+{H(off)} -> {H(regs[opInfo])}");
+                        }
+                        break;
+
+                    case 5: // UWOP_SAVE_NONVOL_FAR
+                        {
+                            uint off = (uint)(codes[2 * (i + 1)] | (codes[2 * (i + 1) + 1] << 8)
+                                            | (codes[2 * (i + 2)] << 16) | (codes[2 * (i + 2) + 1] << 24));
+                            if (ReadPtr64(regs[RSP] + off, out ulong v)) regs[opInfo] = v;
+                            Log($"    [code] SAVE_NONVOL_FAR {RegName[opInfo]} @ RSP+{H(off)} -> {H(regs[opInfo])}");
+                        }
+                        break;
+
+                    case 6: // v2 UWOP_EPILOG (no RSP effect for our purposes)
+                        Log("    [code] EPILOG (v2) — ignored for walk");
+                        break;
+                    case 7: // v2 UWOP_SPARE_CODE — ignored
+                        Log("    [code] SPARE (v2) — ignored");
+                        break;
+
+                    case 8: // UWOP_SAVE_XMM128 — XMM, no GP/RSP effect
+                        Log("    [code] SAVE_XMM128 — no RSP effect");
+                        break;
+                    case 9: // UWOP_SAVE_XMM128_FAR — no GP/RSP effect
+                        Log("    [code] SAVE_XMM128_FAR — no RSP effect");
+                        break;
+
+                    case 10: // UWOP_PUSH_MACHFRAME
+                        {
+                            if (opInfo == 1) regs[RSP] += 8; // error code present
+                            ReadPtr64(regs[RSP] + 0, out ulong mRip);
+                            ReadPtr64(regs[RSP] + 24, out ulong mRsp);
+                            machineRip = mRip;
+                            regs[RSP] = mRsp;
+                            machineFrame = true;
+                            Log($"    [code] PUSH_MACHFRAME: RIP={H(mRip)} newRSP={H(mRsp)}");
+                        }
+                        break;
+
+                    default:
+                        Log($"    [code] UNKNOWN op {op} — ignored");
+                        break;
+                }
+
+                if (machineFrame) break;
+                i += slots;
+            }
+
+            if ((flags & UNW_FLAG_CHAININFO) != 0 && !machineFrame)
+            {
+                // Chained RUNTIME_FUNCTION sits after the (even-padded) code array.
+                int padded = (countOfCodes + 1) & ~1;
+                ulong chainEntry = infoVa + 4 + (ulong)padded * 2;
+                if (ReadU32(chainEntry + 8, out uint parentUnwind))
+                {
+                    chained = true;
+                    nextUnwindRva = parentUnwind;
                 }
             }
 
+            return true;
+        }
+
+        private static int UnwindSlotCount(int op, int opInfo, byte[] codes, int i, int count)
+        {
+            switch (op)
+            {
+                case 0: return 1;                       // PUSH_NONVOL
+                case 1: return opInfo == 0 ? 2 : 3;     // ALLOC_LARGE
+                case 2: return 1;                       // ALLOC_SMALL
+                case 3: return 1;                       // SET_FPREG
+                case 4: return 2;                       // SAVE_NONVOL
+                case 5: return 3;                       // SAVE_NONVOL_FAR
+                case 6: return 1;                       // EPILOG (v2)
+                case 7: return 3;                       // SPARE (v2)
+                case 8: return 2;                       // SAVE_XMM128
+                case 9: return 3;                       // SAVE_XMM128_FAR
+                case 10: return 1;                       // PUSH_MACHFRAME
+                default: return 1;
+            }
+        }
+
+        // ============================================================== x86 EBP CHAIN
+        private static List<CallStackFrameInfo> WalkFramePointerChain(
+            nuint bp, nuint sp, int pointerSize, byte[] addrBuffer, int maxFrames)
+        {
+            Log($"[WalkFramePointerChain] start bp={H(bp)} sp={H(sp)} ptr={pointerSize}");
+            var callstack = new List<CallStackFrameInfo>();
+            nuint ptr = (nuint)pointerSize;
+            nuint alignMask = (nuint)(pointerSize - 1);
+            nuint currentBp = bp;
+            nuint previousBp = 0;
+
+            for (int i = 0; i < maxFrames; i++)
+            {
+                if (!TryReadPointer(currentBp + ptr, pointerSize, addrBuffer, out nuint returnAddress))
+                {
+                    Log($"[WalkFramePointerChain] failed reading return addr at {H(currentBp + ptr)}"); break;
+                }
+                if (returnAddress == 0) { Log("[WalkFramePointerChain] return addr 0 -> end."); break; }
+
+                if (!TryReadPointer(currentBp, pointerSize, addrBuffer, out nuint nextBp))
+                {
+                    Log($"[WalkFramePointerChain] failed reading saved BP at {H(currentBp)}"); break;
+                }
+
+                nuint frameSize = nextBp > currentBp ? nextBp - currentBp : 0;
+                Log($"[WalkFramePointerChain] frame {i}: bp={H(currentBp)} ret={H(returnAddress)} " +
+                    $"nextBp={H(nextBp)} size={H(frameSize)}");
+
+                callstack.Add(new CallStackFrameInfo
+                {
+                    FrameAddress = currentBp,
+                    ReturnAddress = returnAddress,
+                    FrameSize = frameSize,
+                    IsHeuristic = false
+                });
+
+                previousBp = currentBp;
+                currentBp = nextBp;
+
+                if (currentBp == 0 || currentBp < sp || currentBp <= previousBp || (currentBp & alignMask) != 0)
+                {
+                    Log($"[WalkFramePointerChain] chain terminator at {H(currentBp)}."); break;
+                }
+            }
             return callstack;
         }
+
+        // ============================================================== HEURISTIC (LAST RESORT)
+        private static List<CallStackFrameInfo> WalkStackHeuristic(
+            nuint scanStart, int pointerSize, byte[] addrBuffer, int maxFrames)
+        {
+            Log($"[WalkStackHeuristic] *** LAST-RESORT SCAN from {H(scanStart)} *** " +
+                "(over-collects stale return addresses; will NOT match the GUI exactly)");
+            var callstack = new List<CallStackFrameInfo>();
+            nuint step = (nuint)pointerSize;
+            nuint maxScanBytes = 0x4000;
+            nuint limit = scanStart + maxScanBytes;
+            nuint addr = scanStart;
+            byte[] code = new byte[16];
+
+            while (addr < limit && callstack.Count < maxFrames)
+            {
+                if (!TryReadPointer(addr, pointerSize, addrBuffer, out nuint candidate)) break;
+
+                if (IsPlausibleReturnAddress(candidate, pointerSize) && IsPrecededByCall(candidate, code))
+                {
+                    Log($"[WalkStackHeuristic] hit @ {H(addr)} -> {H(candidate)}");
+                    callstack.Add(new CallStackFrameInfo
+                    {
+                        FrameAddress = addr,
+                        ReturnAddress = candidate,
+                        FrameSize = 0,
+                        IsHeuristic = true
+                    });
+                }
+                addr += step;
+            }
+            Log($"[WalkStackHeuristic] collected {callstack.Count} candidate(s).");
+            return callstack;
+        }
+
+        private static bool IsPrecededByCall(nuint returnAddr, byte[] code)
+        {
+            const int look = 16;
+            if (returnAddr <= (nuint)look) return false;
+            if (!DbgMemRead(returnAddr - (nuint)look, code, (nuint)look)) return false;
+
+            if (code[look - 5] == 0xE8) return true; // E8 call rel32
+            for (int back = 2; back <= 7; back++)    // FF /2 call r/m
+            {
+                if (code[look - back] == 0xFF)
+                {
+                    byte modrm = code[look - back + 1];
+                    if (((modrm >> 3) & 0x7) == 0x2) return true;
+                }
+            }
+            if (code[look - 7] == 0x9A) return true; // 9A far call
+            return false;
+        }
+
+        private static bool IsPlausibleReturnAddress(nuint addr, int pointerSize)
+        {
+            ulong a = (ulong)addr;
+            if (a < 0x10000) return false;
+            if (pointerSize == 8)
+            {
+                ulong high = a & 0xFFFF_0000_0000_0000UL;
+                if (high != 0 && high != 0xFFFF_0000_0000_0000UL) return false;
+            }
+            else
+            {
+                if (a > 0xFFFFFFFFUL) return false;
+                if (a >= 0xFFFF0000UL) return false;
+            }
+            return true;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         [Command("run", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
     MCPCmdDescription = "Resumes execution of the debugged process (equivalent to F9 / 'run'). Returns whether the process is now running or has paused at a breakpoint. Takes no arguments.")]
@@ -1944,315 +2814,6 @@ MCPCmdDescription = "Searches process memory for a specific text string and retu
                 return $"Exception in StepOut: {ex.Message}";
             }
         }
-
-
-        [Command("GetCallStack", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose,
-MCPCmdDescription = "Retrieves the current execution call stack by walking RBP frames. Use immediately after a breakpoint hits to trace which module/function originally called the current code. Requires execution to be paused.")]
-        public static string GetCallStack(
-            [McpParam("Maximum number of stack frames to walk before stopping. Defaults to 32.",
-                Required = false, Minimum = 1, Maximum = 256, Examples = new[] { "32" })]
-            int maxFrames = 32)
-        {
-            try
-            {
-                if (!Bridge.DbgIsDebugging())
-                {
-                    return "[GetCallStack] Debugger must be debugging an application";
-                }
-
-                if (Bridge.DbgIsRunning())
-                {
-                    return "[GetCallStack] Debugger must not be in a running state, pause execution to create a break point and trigger it to observe the stack.";
-                }
-
-                if (!Bridge.DbgIsRunLocked())
-                {
-                    return "[GetCallStack] Debugger must be in a running locked state to observe the stack.";
-                }
-
-                var callstackFrames = WalkStackFrames(maxFrames).ToList(); // Eagerly evaluate for count
-
-                if (callstackFrames.Count == 0)
-                {
-                    return "[GetCallStack] Call stack could not be retrieved (check RBP validity or use debugger UI).";
-                }
-
-                var output = new StringBuilder();
-                output.AppendLine($"[GetCallStack] Retrieved {callstackFrames.Count} frames (RBP walk, may be inaccurate):");
-                output.AppendLine($"{"Frame",-5} {"Frame Addr",-18} {"Return Addr",-18} {"Size",-10} {"Module",-25} {"Label Symbol",-40} {"Comment"}");
-                output.AppendLine(new string('-', 130));
-
-                for (int i = 0; i < callstackFrames.Count; i++)
-                {
-                    var frame = callstackFrames[i];
-                    TryResolveSymbols(frame.ReturnAddress, out AddressSymbols symbols);
-
-                    // Cast nuint/UIntPtr to ulong explicitly to support hex formatting string modifiers
-                    string frameAddrHex = ((ulong)frame.FrameAddress).ToString("X16");
-                    string returnAddrHex = ((ulong)frame.ReturnAddress).ToString("X16");
-                    string frameSizeHex = ((ulong)frame.FrameSize).ToString("X");
-
-                    // Format the output line with clean alignments
-                    output.AppendLine(
-                        $"{$"[ {i}]",-5} 0x{frameAddrHex} 0x{returnAddrHex} 0x{frameSizeHex,-8} {symbols.Module,-25} {symbols.Label,-40} {symbols.Comment}");
-                }
-
-                return output.ToString().TrimEnd(); // remove trailing newline
-            }
-            catch (Exception ex)
-            {
-                return $"[GetCallStack] Error: {ex.Message}\n{ex.StackTrace}";
-            }
-        }
-
-        public class AddressSymbols
-        {
-            public string Module { get; set; } = "N/A";
-            public string Label { get; set; } = "N/A";
-            public string Comment { get; set; } = "";
-        }
-        private static bool TryGetInitialStackPointers(out nuint rbp, out nuint rsp)
-        {
-            rbp = DbgValFromStringAsNUInt("rbp");
-            rsp = DbgValFromStringAsNUInt("rsp");
-
-            if (rbp == 0 || rbp < rsp)
-            {
-                Console.WriteLine("[GetCallStackFunc] Initial RBP is invalid or below RSP.");
-                return false;
-            }
-            return true;
-        }
-
-        public static IEnumerable<CallStackFrameInfo> WalkStackFrames(int maxFrames = 32)
-        {
-            if (!TryGetInitialStackPointers(out nuint rbp, out nuint rsp))
-            {
-                yield break; // Stop iteration if initial pointers are invalid
-            }
-
-            nuint currentRbp = rbp;
-            nuint previousRbp = 0;
-
-            for (int i = 0; i < maxFrames; i++)
-            {
-                if (!TryGetFrameInfo(currentRbp, out nuint returnAddress, out nuint nextRbp))
-                {
-                    break; // Stop if we can't read frame info (end of stack or invalid memory)
-                }
-
-                nuint frameSize = CalculateFrameSize(currentRbp, previousRbp);
-
-                yield return new CallStackFrameInfo
-                {
-                    FrameAddress = currentRbp,
-                    ReturnAddress = returnAddress,
-                    FrameSize = frameSize
-                };
-
-                previousRbp = currentRbp;
-                currentRbp = nextRbp;
-
-                if (!IsNextRbpValid(currentRbp, previousRbp, rsp))
-                {
-                    break; // Stop if the next frame pointer is invalid
-                }
-            }
-        }
-        private static bool IsNextRbpValid(nuint currentRbp, nuint previousRbp, nuint rsp)
-        {
-            if (currentRbp == 0 || currentRbp < rsp || currentRbp <= previousRbp)
-            {
-                Console.WriteLine($"[GetCallStackFunc] Invalid next RBP (0x{currentRbp:X}). Previous=0x{previousRbp:X}, RSP=0x{rsp:X}. Stopping walk.");
-                return false;
-            }
-            return true;
-        }
-        private static nuint CalculateFrameSize(nuint currentRbp, nuint previousRbp)
-        {
-            if (previousRbp == 0)
-            {
-                return 0;
-            }
-            // Avoid nonsensical size if RBP decreased or is not what we expect
-            if (currentRbp > previousRbp)
-            {
-                return 0;
-            }
-            return previousRbp - currentRbp;
-        }
-
-        private static bool TryReadNuintFromMemory(nuint address, out nuint value)
-        {
-            byte[] buffer = new byte[sizeof(ulong)];
-            if (DbgMemRead(address, buffer, (nuint)sizeof(ulong)))
-            {
-                value = (nuint)BitConverter.ToUInt64(buffer, 0);
-                return true;
-            }
-            value = 0;
-            Console.WriteLine($"[GetCallStackFunc] Failed to read memory at 0x{address:X}");
-            return false;
-        }
-
-        private static bool TryGetFrameInfo(nuint currentRbp, out nuint returnAddress, out nuint nextRbp)
-        {
-            returnAddress = 0;
-            nextRbp = 0;
-
-            if (!TryReadNuintFromMemory(currentRbp + (nuint)sizeof(ulong), out returnAddress))
-            {
-                return false;
-            }
-
-            if (returnAddress == 0)
-            {
-                Console.WriteLine("[GetCallStackFunc] Reached null return address.");
-                return false;
-            }
-
-            return TryReadNuintFromMemory(currentRbp, out nextRbp);
-        }
-
-        private static bool TryResolveSymbols(nuint address, out AddressSymbols symbols)
-        {
-            symbols = new AddressSymbols();
-            const int MAX_MODULE_SIZE_BUFF = 256;
-            const int MAX_LABEL_SIZE_BUFF = 256;
-            const int MAX_COMMENT_SIZE_BUFF = 512;
-
-            IntPtr ptrModule = IntPtr.Zero;
-            IntPtr ptrLabel = IntPtr.Zero;
-            IntPtr ptrComment = IntPtr.Zero;
-
-            try
-            {
-                ptrModule = Marshal.AllocHGlobal(MAX_MODULE_SIZE_BUFF);
-                ptrLabel = Marshal.AllocHGlobal(MAX_LABEL_SIZE_BUFF);
-                ptrComment = Marshal.AllocHGlobal(MAX_COMMENT_SIZE_BUFF);
-
-                Marshal.WriteByte(ptrModule, 0, 0);
-                Marshal.WriteByte(ptrLabel, 0, 0);
-                Marshal.WriteByte(ptrComment, 0, 0);
-
-                var addrInfo = new BRIDGE_ADDRINFO_NATIVE
-                {
-                    module = ptrModule,
-                    label = ptrLabel,
-                    comment = ptrComment,
-                    flags = ADDRINFOFLAGS.flagmodule | ADDRINFOFLAGS.flaglabel | ADDRINFOFLAGS.flagcomment
-                };
-
-                if (DbgAddrInfoGet(address, 0, ref addrInfo))
-                {
-                    symbols.Module = Marshal.PtrToStringAnsi(addrInfo.module) ?? "N/A";
-                    symbols.Label = Marshal.PtrToStringAnsi(addrInfo.label) ?? "N/A";
-                    string retrievedComment = Marshal.PtrToStringAnsi(addrInfo.comment) ?? "";
-
-                    if (!string.IsNullOrEmpty(retrievedComment))
-                    {
-                        // Handle auto-comment marker (\1)
-                        symbols.Comment = (retrievedComment[0] == '\x01')
-                                          ? retrievedComment.Substring(1)
-                                          : retrievedComment;
-                    }
-                    return true;
-                }
-                else
-                {
-                    // Fallback to get module info only if the full query fails
-                    var modInfoOnly = new BRIDGE_ADDRINFO_NATIVE { flags = ADDRINFOFLAGS.flagmodule, module = ptrModule };
-                    Marshal.WriteByte(ptrModule, 0, 0); // Clear buffer before reuse
-
-                    if (DbgAddrInfoGet(address, 0, ref modInfoOnly))
-                    {
-                        symbols.Module = Marshal.PtrToStringAnsi(modInfoOnly.module) ?? "Lookup Failed";
-                    }
-                    else
-                    {
-                        symbols.Module = "Lookup Failed";
-                    }
-                    return false;
-                }
-            }
-            finally
-            {
-                if (ptrModule != IntPtr.Zero)
-                {
-                    Marshal.FreeHGlobal(ptrModule);
-                }
-                if (ptrLabel != IntPtr.Zero)
-                {
-                    Marshal.FreeHGlobal(ptrLabel);
-                }
-                if (ptrComment != IntPtr.Zero)
-                {
-                    Marshal.FreeHGlobal(ptrComment);
-                }
-            }
-        }
-
-        // GetCallStackFunc remains the same as the previous version, returning List<CallStackFrameInfo>
-        // public static List<CallStackFrameInfo> GetCallStackFunc(int maxFrames = 32) { ... }
-
-
-        //[Command("GetCallStack", DebugOnly = true, MCPOnly = true)]
-        //public static string GetCallStack(int maxFrames = 32)
-        //{
-        //    try
-        //    {
-        //        var callstack = GetCallStackFunc(maxFrames);
-
-        //        if (callstack.Count == 0)
-        //            return "[GetCallStack] No call stack could be retrieved.";
-
-        //        var output = new StringBuilder();
-        //        output.AppendLine($"[GetCallStack] Retrieved {callstack.Count} frames:");
-
-        //        for (int i = 0; i < callstack.Count; i++)
-        //        {
-        //            output.AppendLine($"Frame {i,2}: 0x{callstack[i]:X}");
-        //        }
-
-        //        return output.ToString().TrimEnd(); // remove trailing newline
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return $"[GetCallStack] Error: {ex.Message}";
-        //    }
-        //}
-
-        //public static List<nuint> GetCallStackFunc(int maxFrames = 32)
-        //{
-        //    List<nuint> callstack = new List<nuint>();
-
-        //    nuint rbp = Bridge.DbgValFromString("rbp");
-        //    nuint rsp = Bridge.DbgValFromString("rsp");
-
-        //    for (int i = 0; i < maxFrames; i++)
-        //    {
-        //        // Read return address (next value after saved RBP)
-        //        byte[] addrBuffer = new byte[8]; // 64-bit address
-        //        if (!Bridge.DbgMemRead(rbp + 8, addrBuffer, 8))
-        //            break;
-
-        //        nuint returnAddress = (nuint)BitConverter.ToUInt64(addrBuffer, 0);
-        //        if (returnAddress == 0)
-        //            break;
-
-        //        callstack.Add(returnAddress);
-
-        //        // Read the previous RBP
-        //        if (!Bridge.DbgMemRead(rbp, addrBuffer, 8))
-        //            break;
-
-        //        rbp = (nuint)BitConverter.ToUInt64(addrBuffer, 0);
-        //        if (rbp == 0 || rbp < rsp)
-        //            break; // Invalid frame or stack unwound
-        //    }
-
-        //    return callstack;
-        //}
 
         [Command("GetAllActiveThreads", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Lists all active threads in the target process with thread number, thread ID, entry point, TEB, and thread name. Takes no arguments.")]
         public static string GetAllActiveThreads()

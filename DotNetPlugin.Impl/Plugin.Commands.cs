@@ -1787,9 +1787,17 @@ MCPCmdDescription = "Searches process memory for a specific text string and retu
         }
 
         // x64 general-purpose register indices (UNWIND_CODE OpInfo encoding)
-        private const int RAX = 0, RCX = 1, RDX = 2, RBX = 3, RSP = 4, RBP = 5, RSI = 6, RDI = 7;
-        private static readonly string[] RegName =
-            { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" };
+
+#if AMD64
+    private const int RAX = 0, RCX = 1, RDX = 2, RBX = 3, RSP = 4, RBP = 5, RSI = 6, RDI = 7;
+    private static readonly string[] RegName = { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" };
+
+#else
+    private const int EAX = 0, ECX = 1, EDX = 2, EBX = 3, ESP = 4, EBP = 5, ESI = 6, EDI = 7;
+    private static readonly string[] RegName = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" };
+#endif
+
+
 
         [Command("GetCallStack", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose,
 MCPCmdDescription = "Retrieves the current execution call stack by walking RBP frames. Use immediately after a breakpoint hits to trace which module/function originally called the current code. Requires execution to be paused.")]
@@ -1832,23 +1840,22 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
             }
 
             // ---------------------------------------------------------------- dispatch
-            if (pointerSize == 8)
-            {
-                // PRIMARY for x64: unwind-info walk. Works regardless of RBP (RBP==0 is normal here).
-                Log("[GetCallStackFunc] x64 -> unwind-info walk (RtlVirtualUnwind-style).");
-                callstack = WalkX64UnwindInfo(ip, sp, bp, addrBuffer, maxFrames);
+            // ---------------------------------------------------------------- dispatch
+#if AMD64
+            // PRIMARY for x64: unwind-info walk. Works regardless of RBP (RBP==0 is normal here).
+            Log("[GetCallStackFunc] x64 -> unwind-info walk (RtlVirtualUnwind-style).");
+            callstack = WalkX64UnwindInfo(ip, sp, bp, addrBuffer, maxFrames);
 
-                if (callstack.Count == 0)
-                {
-                    Log("[GetCallStackFunc] Unwind-info walk produced 0 frames. " +
-                        "Check that mod.base(<addr>) resolves through your bridge. " +
-                        "Falling back to heuristic scan (will NOT match the GUI).");
-                    callstack = WalkStackHeuristic(sp, pointerSize, addrBuffer, maxFrames);
-                }
-            }
-            else
+            if (callstack.Count == 0)
             {
-                // PRIMARY for x86: EBP chain.
+                Log("[GetCallStackFunc] Unwind-info walk produced 0 frames. " +
+                    "Check that mod.base(<addr>) resolves through your bridge. " +
+                    "Falling back to heuristic scan (will NOT match the GUI).");
+                callstack = WalkStackHeuristic(sp, pointerSize, addrBuffer, maxFrames);
+            }
+#else
+            // PRIMARY for x86: EBP chain.
+            {
                 nuint alignMask = (nuint)(pointerSize - 1);
                 bool bpValid = bp != 0 && bp >= sp && (bp & alignMask) == 0;
                 Log($"[GetCallStackFunc] x86 EBP valid? {bpValid} " +
@@ -1863,6 +1870,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
                     callstack = WalkStackHeuristic(sp, pointerSize, addrBuffer, maxFrames);
                 }
             }
+#endif
 
             // ---------------------------------------------------------------- optional extension
             if (extendWithHeuristic && callstack.Count > 0 && callstack.Count < maxFrames)
@@ -2162,6 +2170,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
             return true;
         }
 
+#if AMD64
         // ============================================================== x64 UNWIND WALK
         // Mirrors RtlVirtualUnwind: for each frame, find the module's exception directory,
         // locate the RUNTIME_FUNCTION covering RIP, replay the UNWIND_INFO to adjust RSP,
@@ -2543,6 +2552,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
             return true;
         }
+#endif   // AMD64  — end of x64 unwind machiner
 
         private static int UnwindSlotCount(int op, int opInfo, byte[] codes, int i, int count)
         {
@@ -2565,7 +2575,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
         // ============================================================== x86 EBP CHAIN
         private static List<CallStackFrameInfo> WalkFramePointerChain(
-            nuint bp, nuint sp, int pointerSize, byte[] addrBuffer, int maxFrames)
+    nuint bp, nuint sp, int pointerSize, byte[] addrBuffer, int maxFrames)
         {
             Log($"[WalkFramePointerChain] start bp={H(bp)} sp={H(sp)} ptr={pointerSize}");
             var callstack = new List<CallStackFrameInfo>();
@@ -2580,7 +2590,21 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
                 {
                     Log($"[WalkFramePointerChain] failed reading return addr at {H(currentBp + ptr)}"); break;
                 }
-                if (returnAddress == 0) { Log("[WalkFramePointerChain] return addr 0 -> end."); break; }
+
+                // Outermost frame: return address 0 is the thread-entry sentinel. x64dbg still
+                // lists this frame (To=0, labeled by its From), so RECORD it, then stop.
+                if (returnAddress == 0)
+                {
+                    Log("[WalkFramePointerChain] return addr 0 -> top of stack; recording final frame.");
+                    callstack.Add(new CallStackFrameInfo
+                    {
+                        FrameAddress = currentBp + ptr,   // return-address slot == x64dbg "Address"
+                        ReturnAddress = 0,
+                        FrameSize = 0,
+                        IsHeuristic = false
+                    });
+                    break;
+                }
 
                 if (!TryReadPointer(currentBp, pointerSize, addrBuffer, out nuint nextBp))
                 {
@@ -2593,7 +2617,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
                 callstack.Add(new CallStackFrameInfo
                 {
-                    FrameAddress = currentBp,
+                    FrameAddress = currentBp + ptr,   // return-address slot == x64dbg "Address"
                     ReturnAddress = returnAddress,
                     FrameSize = frameSize,
                     IsHeuristic = false
@@ -2931,14 +2955,24 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
             Console.WriteLine("----------------------------------------");
             Console.WriteLine($"METHOD: {nameof(GetAllRegistersAsStrings)}");
             Console.WriteLine("----------------------------------------");
+#if AMD64
             string[] regNames = new[]
-            {
+      {
                 "rax", "rbx", "rcx", "rdx",
                 "rsi", "rdi", "rbp", "rsp",
                 "r8",  "r9",  "r10", "r11",
                 "r12", "r13", "r14", "r15",
                 "rip"
             };
+
+#else
+            string[] regNames = new[]
+            {
+                "eax", "ebx", "ecx", "edx",
+                "esi", "edi", "ebp", "esp",
+                "eip"
+            };
+#endif
 
             List<string> result = new List<string>();
 

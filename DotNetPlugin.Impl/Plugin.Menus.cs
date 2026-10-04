@@ -22,12 +22,12 @@ namespace DotNetPlugin
             }
 
             menus.Main
-                .AddAndConfigureItem("&Start MCP Server", StartMCPServer).SetIcon(Resources.AboutIcon).Parent
-                .AddAndConfigureItem("&Stop MCP Server", StopMCPServer).SetIcon(Resources.AboutIcon).Parent
+                .AddAndConfigureItem("&Start MCP Server", StartMCPServer).Parent
+                .AddAndConfigureItem("&Stop MCP Server", StopMCPServer).Parent
                 .AddSeparator()
-                .AddAndConfigureItem("&Configure MCP Server...", ConfigureMCPServer).SetIcon(Resources.AboutIcon).Parent
+                .AddAndConfigureItem("&Configure MCP Server...", ConfigureMCPServer).Parent
                 .AddSeparator()
-                .AddAndConfigureItem("&About...", OnAboutMenuItem).SetIcon(Resources.AboutIcon);
+                .AddAndConfigureItem("&About...", OnAboutMenuItem);
         }
 
         public void OnAboutMenuItem(MenuItem menuItem)

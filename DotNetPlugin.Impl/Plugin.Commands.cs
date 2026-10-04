@@ -90,7 +90,7 @@ namespace DotNetPlugin
         static McpServerConfig GMcpServerConfig;
 
         // Server lifecycle is driven from the x64dbg command line only; it is
-        // intentionally NOT exposed over MCP (X64DbgOnly) — an agent must not
+        // intentionally NOT exposed over MCP (X64DbgOnly) ï¿½ an agent must not
         // be able to start or stop the transport it is connected through.
         // Keeps the string[] signature required by x64dbg command registration.
         [Command("StartMCPServer", DebugOnly = false, X64DbgOnly = true, Category = CommandCategory.GeneralPurpose)]
@@ -1771,7 +1771,7 @@ MCPCmdDescription = "Searches process memory for a specific text string and retu
         }
 
         // Always print hex WITH the value's true hex digits. (The stale build printed RSP
-        // in decimal behind a "0x" prefix — that bug is impossible with these helpers.)
+        // in decimal behind a "0x" prefix ï¿½ that bug is impossible with these helpers.)
         private static string H(ulong v) => "0x" + v.ToString("X");
         private static string H(nuint v) => "0x" + ((ulong)v).ToString("X");
 
@@ -1835,8 +1835,8 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
             if (sp == 0)
             {
-                Log("[GetCallStackFunc] Stack pointer is 0 — no usable context. Aborting.");
-                return "[GetCallStackFunc] Stack pointer is 0 — no usable context. Aborting.";
+                Log("[GetCallStackFunc] Stack pointer is 0 ï¿½ no usable context. Aborting.");
+                return "[GetCallStackFunc] Stack pointer is 0 ï¿½ no usable context. Aborting.";
             }
 
             // ---------------------------------------------------------------- dispatch
@@ -1866,7 +1866,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
                 if (callstack.Count == 0)
                 {
-                    Log("[GetCallStackFunc] EBP chain empty — heuristic scan fallback.");
+                    Log("[GetCallStackFunc] EBP chain empty ï¿½ heuristic scan fallback.");
                     callstack = WalkStackHeuristic(sp, pointerSize, addrBuffer, maxFrames);
                 }
             }
@@ -2103,7 +2103,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
             if (arch == TargetArch.X86) { Log("[ResolvePointerSize] Forced x86 (4)."); return 4; }
             if (arch == TargetArch.X64) { Log("[ResolvePointerSize] Forced x64 (8)."); return 8; }
 
-            // Auto-detect. WARNING: unreliable under WOW64 — a 64-bit debugger may resolve
+            // Auto-detect. WARNING: unreliable under WOW64 ï¿½ a 64-bit debugger may resolve
             // "rip" for a 32-bit thread. Pass arch explicitly when you know the target.
             Log("[ResolvePointerSize] Auto-detect (pass arch explicitly to avoid WOW64 ambiguity)...");
             try
@@ -2438,7 +2438,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
                 int slots = UnwindSlotCount(op, opInfo, codes, i, countOfCodes);
 
                 // If we're still in the prolog, ops that haven't executed yet (codeOffset >
-                // current prolog offset) must be skipped — but still advance the index.
+                // current prolog offset) must be skipped ï¿½ but still advance the index.
                 if (inProlog && codeOffset > prologOffset)
                 {
                     Log($"    [code] skip (not yet executed) op={op} opInfo={opInfo} at prologOff={codeOffset}");
@@ -2504,17 +2504,17 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
                         break;
 
                     case 6: // v2 UWOP_EPILOG (no RSP effect for our purposes)
-                        Log("    [code] EPILOG (v2) — ignored for walk");
+                        Log("    [code] EPILOG (v2) ï¿½ ignored for walk");
                         break;
-                    case 7: // v2 UWOP_SPARE_CODE — ignored
-                        Log("    [code] SPARE (v2) — ignored");
+                    case 7: // v2 UWOP_SPARE_CODE ï¿½ ignored
+                        Log("    [code] SPARE (v2) ï¿½ ignored");
                         break;
 
-                    case 8: // UWOP_SAVE_XMM128 — XMM, no GP/RSP effect
-                        Log("    [code] SAVE_XMM128 — no RSP effect");
+                    case 8: // UWOP_SAVE_XMM128 ï¿½ XMM, no GP/RSP effect
+                        Log("    [code] SAVE_XMM128 ï¿½ no RSP effect");
                         break;
-                    case 9: // UWOP_SAVE_XMM128_FAR — no GP/RSP effect
-                        Log("    [code] SAVE_XMM128_FAR — no RSP effect");
+                    case 9: // UWOP_SAVE_XMM128_FAR ï¿½ no GP/RSP effect
+                        Log("    [code] SAVE_XMM128_FAR ï¿½ no RSP effect");
                         break;
 
                     case 10: // UWOP_PUSH_MACHFRAME
@@ -2530,7 +2530,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
                         break;
 
                     default:
-                        Log($"    [code] UNKNOWN op {op} — ignored");
+                        Log($"    [code] UNKNOWN op {op} ï¿½ ignored");
                         break;
                 }
 
@@ -2552,7 +2552,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
             return true;
         }
-#endif   // AMD64  — end of x64 unwind machiner
+#endif   // AMD64  ï¿½ end of x64 unwind machiner
 
         private static int UnwindSlotCount(int op, int opInfo, byte[] codes, int i, int count)
         {
@@ -2723,6 +2723,204 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
 
 
+
+        [Command("LoadBinary", DebugOnly = false, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Loads (or reloads) an executable into the debugger for a new debugging session. Equivalent to File > Open in the GUI. If a session is already active it is terminated first. The debuggee pauses at the system breakpoint.")]
+        public static string LoadBinary(
+            [McpParam("Absolute file path of the executable to debug.",
+                Examples = new[] { @"C:\targets\app.exe", @"C:\Users\user\Desktop\test.exe" })]
+            string filePath,
+            [McpParam("Optional command-line arguments to pass to the executable.",
+                Required = false, Examples = new[] { "--verbose", "/config test.ini" })]
+            string arguments = "")
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(LoadBinary)}");
+            Console.WriteLine($"  - {nameof(filePath)}  : {filePath}");
+            Console.WriteLine($"  - {nameof(arguments)} : {arguments}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (string.IsNullOrWhiteSpace(filePath))
+                    return "Error: filePath is required.";
+
+                filePath = filePath.Trim().Replace("\"", "");
+
+                if (!File.Exists(filePath))
+                    return $"Error: File not found: {filePath}";
+
+                string command = string.IsNullOrWhiteSpace(arguments)
+                    ? $"init \"{filePath}\""
+                    : $"init \"{filePath}\", \"{arguments}\"";
+
+                string result = DbgCmdExecFunction(command, 2000);
+
+                Thread.Sleep(500);
+
+                if (Bridge.DbgIsDebugging())
+                {
+                    nuint cip = Bridge.DbgValFromString("cip");
+                    var modInfo = new Module.ModuleInfo();
+                    string modName = Module.InfoFromAddr(cip, ref modInfo) ? modInfo.name : "unknown";
+                    return $"SUCCESS: Loaded '{Path.GetFileName(filePath)}'. Debuggee paused at 0x{cip:X} ({modName}). Use 'run' to continue execution.";
+                }
+
+                return string.IsNullOrEmpty(result) || result.Contains("Command executed successfully")
+                    ? $"Binary init command sent for '{Path.GetFileName(filePath)}'. The debuggee may still be loading â€” check with GetAllRegisters or run."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in LoadBinary: {ex.Message}\n{ex.StackTrace}";
+            }
+        }
+
+        [Command("RestartDebug", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Restarts the current debugging session from the beginning. The executable is re-launched and pauses at the system breakpoint. Equivalent to Debug > Restart in the GUI. Takes no arguments.")]
+        public static string RestartDebug()
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(RestartDebug)}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                    return "Error: No active debugging session to restart.";
+
+                string result = DbgCmdExecFunction("restartadmin", 2000);
+
+                Thread.Sleep(1000);
+
+                if (Bridge.DbgIsDebugging())
+                {
+                    nuint cip = Bridge.DbgValFromString("cip");
+                    return $"SUCCESS: Debug session restarted. Paused at 0x{cip:X}. Use 'run' to continue execution.";
+                }
+
+                return string.IsNullOrEmpty(result) || result.Contains("Command executed successfully")
+                    ? "Restart command sent. The debuggee may still be initializing."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in RestartDebug: {ex.Message}\n{ex.StackTrace}";
+            }
+        }
+
+        [Command("StopDebug", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Terminates the current debugging session and closes the debuggee process. Takes no arguments.")]
+        public static string StopDebug()
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(StopDebug)}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                    return "No active debugging session to stop.";
+
+                string result = DbgCmdExecFunction("stop", 1000);
+
+                Thread.Sleep(500);
+
+                return Bridge.DbgIsDebugging()
+                    ? "Stop command sent but debugger reports still active. It may be finalizing."
+                    : "SUCCESS: Debugging session terminated.";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in StopDebug: {ex.Message}\n{ex.StackTrace}";
+            }
+        }
+
+        [Command("PauseDebug", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Pauses (suspends) the running debuggee, equivalent to Debug > Pause (F12). Use this when the target is running and you need to inspect its state (registers, call stack, memory). Takes no arguments.")]
+        public static string PauseDebug()
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(PauseDebug)}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                    return "Error: No active debugging session.";
+
+                if (!Bridge.DbgIsRunning())
+                {
+                    nuint cip = Bridge.DbgValFromString("cip");
+                    return $"Debuggee is already paused at 0x{cip:X}.";
+                }
+
+                string result = DbgCmdExecFunction("pause", 2000);
+
+                Thread.Sleep(300);
+
+                if (!Bridge.DbgIsRunning())
+                {
+                    nuint cip = Bridge.DbgValFromString("cip");
+                    var modInfo = new Module.ModuleInfo();
+                    string modName = Module.InfoFromAddr(cip, ref modInfo) ? modInfo.name : "unknown";
+                    return $"SUCCESS: Debuggee paused at 0x{cip:X} ({modName}). Use GetCallStack, GetAllRegisters, or ReadDismAtAddress to inspect state.";
+                }
+
+                return "Pause command sent but process may still be settling. Try again or use StepInto.";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in PauseDebug: {ex.Message}\n{ex.StackTrace}";
+            }
+        }
+
+        [Command("DeleteBreakpoint", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Deletes (removes) a breakpoint. Pass 'all' to clear every breakpoint, or a specific address/symbol to remove just that one.")]
+        public static string DeleteBreakpoint(
+            [McpParam("target", "Address, symbol, or 'all' to clear all breakpoints")] string target)
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(DeleteBreakpoint)}");
+            Console.WriteLine($"target: {target}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                    return "Error: No active debugging session.";
+
+                string cmd = target.Trim().ToLower() == "all" ? "bpc" : $"bc {target}";
+                string result = DbgCmdExecFunction(cmd, 2000);
+                return string.IsNullOrWhiteSpace(result)
+                    ? $"Breakpoint(s) cleared ({cmd})."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in DeleteBreakpoint: {ex.Message}";
+            }
+        }
+
+        [Command("ExecuteDbgCommand", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
+            MCPCmdDescription = "Executes an arbitrary x64dbg command string (e.g. 'bpd 0x401000', 'SetBPX ...', 'eob run'). Use when no dedicated MCP tool exists for the operation you need.")]
+        public static string ExecuteDbgCommand(
+            [McpParam("command", "The x64dbg command to execute (e.g. 'bc 0x401000', 'bpd *', 'eob run')")] string command)
+        {
+            Console.WriteLine("----------------------------------------");
+            Console.WriteLine($"METHOD: {nameof(ExecuteDbgCommand)}");
+            Console.WriteLine($"command: {command}");
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                if (!Bridge.DbgIsDebugging())
+                    return "Error: No active debugging session.";
+
+                string result = DbgCmdExecFunction(command, 3000);
+                return string.IsNullOrWhiteSpace(result)
+                    ? $"Command '{command}' executed successfully."
+                    : $"Result: {result}";
+            }
+            catch (Exception ex)
+            {
+                return $"Exception in ExecuteDbgCommand: {ex.Message}";
+            }
+        }
 
         [Command("run", DebugOnly = true, MCPOnly = true, Category = CommandCategory.DebugControl,
     MCPCmdDescription = "Resumes execution of the debugged process (equivalent to F9 / 'run'). Returns whether the process is now running or has paused at a breakpoint. Takes no arguments.")]
@@ -2949,7 +3147,7 @@ MCPCmdDescription = "Retrieves the current execution call stack by walking RBP f
 
 
 
-        [Command("GetAllRegisters", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Returns the current values of all general-purpose registers (RAX–R15, RIP). Takes no arguments.")]
+        [Command("GetAllRegisters", DebugOnly = true, MCPOnly = true, Category = CommandCategory.GeneralPurpose, MCPCmdDescription = "Returns the current values of all general-purpose registers (RAXï¿½R15, RIP). Takes no arguments.")]
         public static string GetAllRegistersAsStrings()
         {
             Console.WriteLine("----------------------------------------");
